@@ -15,11 +15,7 @@
     "runtimeVersion": {
       "policy": "fingerprint"
     },
-    "platforms": [
-      "android",
-      "ios",
-      "web"
-    ],
+    "platforms": ["android", "ios", "web"],
     "android": {
       "package": "com.ollamamobile.app",
       "versionCode": 1,
