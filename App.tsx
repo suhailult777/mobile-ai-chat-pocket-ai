@@ -1,5 +1,11 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { View, Text, TouchableOpacity, StyleSheet, StatusBar } from "react-native";
+import {
+  View,
+  Text,
+  TouchableOpacity,
+  StyleSheet,
+  StatusBar,
+} from "react-native";
 import * as SecureStore from "expo-secure-store";
 import ChatScreen from "./src/screens/ChatScreen";
 import SettingsScreen from "./src/screens/SettingsScreen";
@@ -16,8 +22,8 @@ export const defaultSettings: Settings = {
   model: "llama3",
 };
 
-import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
-import { SettingsProvider } from './src/context/SettingsContext';
+import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
+import { SettingsProvider } from "./src/context/SettingsContext";
 
 export default function App() {
   const [tab, setTab] = useState<"chat" | "settings">("chat");
@@ -64,22 +70,22 @@ export default function App() {
     <SafeAreaProvider>
       <SettingsProvider>
         <SafeAreaView style={styles.container}>
-        <StatusBar barStyle="dark-content" />
-        <View style={styles.tabBar}>
-          <TabButton
-            label="Chat"
-            active={tab === "chat"}
-            onPress={() => setTab("chat")}
-          />
-          <TabButton
-            label="Settings"
-            active={tab === "settings"}
-            onPress={() => setTab("settings")}
-          />
-        </View>
-        <View style={styles.content}>
-          {tab === "chat" ? <ChatScreen /> : <SettingsScreen />}
-        </View>
+          <StatusBar barStyle="dark-content" />
+          <View style={styles.tabBar}>
+            <TabButton
+              label="Chat"
+              active={tab === "chat"}
+              onPress={() => setTab("chat")}
+            />
+            <TabButton
+              label="Settings"
+              active={tab === "settings"}
+              onPress={() => setTab("settings")}
+            />
+          </View>
+          <View style={styles.content}>
+            {tab === "chat" ? <ChatScreen /> : <SettingsScreen />}
+          </View>
         </SafeAreaView>
       </SettingsProvider>
     </SafeAreaProvider>

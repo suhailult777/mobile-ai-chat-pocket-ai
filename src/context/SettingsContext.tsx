@@ -1,5 +1,5 @@
-import React, { useEffect, useMemo, useState } from 'react';
-import * as SecureStore from 'expo-secure-store';
+import React, { useEffect, useMemo, useState } from "react";
+import * as SecureStore from "expo-secure-store";
 
 export type Settings = {
   host: string;
@@ -8,9 +8,9 @@ export type Settings = {
 };
 
 export const defaultSettings: Settings = {
-  host: '127.0.0.1',
-  port: '11434',
-  model: 'tinyllama:latest',
+  host: "127.0.0.1",
+  port: "11434",
+  model: "tinyllama:latest",
 };
 
 export const SettingsContext = React.createContext<{
@@ -25,9 +25,9 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
     (async () => {
       try {
         const [host, port, model] = await Promise.all([
-          SecureStore.getItemAsync('host'),
-          SecureStore.getItemAsync('port'),
-          SecureStore.getItemAsync('model'),
+          SecureStore.getItemAsync("host"),
+          SecureStore.getItemAsync("port"),
+          SecureStore.getItemAsync("model"),
         ]);
         setSettings({
           host: host || defaultSettings.host,
@@ -35,24 +35,26 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
           model: model || defaultSettings.model,
         });
       } catch (e) {
-        console.warn('Failed to load settings', e);
+        console.warn("Failed to load settings", e);
       }
     })();
   }, []);
 
   const saveSettings = useMemo(
-    () =>
-      async (partial: Partial<Settings>) => {
-        const next = { ...settings, ...partial };
-        setSettings(next);
-        try {
-          if (partial.host !== undefined) await SecureStore.setItemAsync('host', next.host);
-          if (partial.port !== undefined) await SecureStore.setItemAsync('port', next.port);
-          if (partial.model !== undefined) await SecureStore.setItemAsync('model', next.model);
-        } catch (e) {
-          console.warn('Failed to save settings', e);
-        }
-      },
+    () => async (partial: Partial<Settings>) => {
+      const next = { ...settings, ...partial };
+      setSettings(next);
+      try {
+        if (partial.host !== undefined)
+          await SecureStore.setItemAsync("host", next.host);
+        if (partial.port !== undefined)
+          await SecureStore.setItemAsync("port", next.port);
+        if (partial.model !== undefined)
+          await SecureStore.setItemAsync("model", next.model);
+      } catch (e) {
+        console.warn("Failed to save settings", e);
+      }
+    },
     [settings]
   );
 

@@ -145,7 +145,10 @@ export default function ChatScreen() {
         Connect your phone and Ollama host to the same LAN. Endpoint: {baseUrl}
       </Text>
       <View style={styles.modelRow}>
-        <TouchableOpacity onPress={toggleModels} style={[styles.button, styles.modelButton]}>
+        <TouchableOpacity
+          onPress={toggleModels}
+          style={[styles.button, styles.modelButton]}
+        >
           <Text style={styles.buttonText}>Model: {settings.model}</Text>
         </TouchableOpacity>
       </View>
@@ -153,8 +156,19 @@ export default function ChatScreen() {
         <View style={styles.modelList}>
           <ScrollView horizontal contentContainerStyle={styles.modelListInner}>
             {models.map((m) => (
-              <TouchableOpacity key={m} onPress={() => chooseModel(m)} style={[styles.chip, m === settings.model && styles.chipActive]}>
-                <Text style={[styles.chipText, m === settings.model && styles.chipTextActive]}>{m}</Text>
+              <TouchableOpacity
+                key={m}
+                onPress={() => chooseModel(m)}
+                style={[styles.chip, m === settings.model && styles.chipActive]}
+              >
+                <Text
+                  style={[
+                    styles.chipText,
+                    m === settings.model && styles.chipTextActive,
+                  ]}
+                >
+                  {m}
+                </Text>
               </TouchableOpacity>
             ))}
           </ScrollView>
@@ -202,12 +216,19 @@ const styles = StyleSheet.create({
   buttonText: { color: "#fff", fontWeight: "700" },
   hint: { textAlign: "center", color: "#666", padding: 8, fontSize: 12 },
   error: { color: "#e00", textAlign: "center", paddingHorizontal: 12 },
-  modelRow: { flexDirection: 'row', paddingHorizontal: 8, paddingBottom: 4 },
-  modelButton: { backgroundColor: '#5856D6', marginRight: 8 },
+  modelRow: { flexDirection: "row", paddingHorizontal: 8, paddingBottom: 4 },
+  modelButton: { backgroundColor: "#5856D6", marginRight: 8 },
   modelList: { paddingHorizontal: 8, paddingBottom: 8 },
-  modelListInner: { alignItems: 'center' },
-  chip: { paddingHorizontal: 10, paddingVertical: 6, borderRadius: 16, borderWidth: 1, borderColor: '#ccc', marginRight: 8 },
-  chipActive: { backgroundColor: '#E6F0FF', borderColor: '#007AFF' },
-  chipText: { color: '#333' },
-  chipTextActive: { color: '#007AFF', fontWeight: '700' },
+  modelListInner: { alignItems: "center" },
+  chip: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: "#ccc",
+    marginRight: 8,
+  },
+  chipActive: { backgroundColor: "#E6F0FF", borderColor: "#007AFF" },
+  chipText: { color: "#333" },
+  chipTextActive: { color: "#007AFF", fontWeight: "700" },
 });
