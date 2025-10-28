@@ -1,0 +1,29 @@
+{
+  "name": "ollama-mobile",
+  "version": "0.1.0",
+  "private": true,
+  "main": "node_modules/expo/AppEntry.js",
+  "scripts": {
+    "start": "expo start",
+    "android": "expo start --android",
+    "ios": "expo start --ios",
+    "web": "expo start --web",
+    "typecheck": "tsc -p .",
+    "lint": "echo \"No lint configured for Phase 1\"",
+    "test": "node -e \"console.log('No tests in Phase 1 yet')\"",
+    "android:apk": "npx eas build -p android --profile preview"
+  },
+  "dependencies": {
+    "expo": "~54.0.0",
+    "expo-secure-store": "~15.0.7",
+    "react": "19.1.0",
+    "react-native": "0.81.5"
+  },
+  "devDependencies": {
+    "@expo/cli": "^0.19.0",
+    "@types/react": "~19.1.10",
+    "babel-preset-expo": "~54.0.0",
+    "typescript": "^5.6.2",
+    "eas-cli": "^16.25.0"
+  }
+}

@@ -1,0 +1,35 @@
+{
+  "expo": {
+    "name": "Ollama Mobile",
+    "slug": "ollama-mobile",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "plugins": [
+      [
+        "expo-secure-store",
+        {
+          "configureAndroidBackup": true
+        }
+      ]
+    ],
+    "runtimeVersion": {
+      "policy": "fingerprint"
+    },
+    "platforms": [
+      "android",
+      "ios",
+      "web"
+    ],
+    "android": {
+      "package": "com.ollamamobile.app",
+      "versionCode": 1,
+      "permissions": [],
+      "usesCleartextTraffic": true
+    },
+    "extra": {
+      "eas": {
+        "projectId": "c985f517-4fc2-4e2d-a535-fdd6e686cf56"
+      }
+    }
+  }
+}
