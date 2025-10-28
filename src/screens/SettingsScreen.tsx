@@ -7,33 +7,34 @@ import {
   StyleSheet,
 } from "react-native";
 import { SettingsContext } from "../context/SettingsContext";
-import { getModels, ping } from "../lib/ollamaClient";
+import { getModelsProvider, pingProvider } from "../lib/providerRouter";
 
 export default function SettingsScreen() {
   const { settings, saveSettings } = useContext(SettingsContext);
   const [host, setHost] = useState(settings.host);
   const [port, setPort] = useState(settings.port);
   const [model, setModel] = useState(settings.model);
+  const [mode, setMode] = useState<"remote" | "native">(settings.mode);
 
   const [status, setStatus] = useState<string>("");
   const baseUrl = useMemo(() => `http://${host}:${port}`, [host, port]);
 
   const onSave = async () => {
-    await saveSettings({ host, port, model });
+    await saveSettings({ host, port, model, mode });
     setStatus("Saved");
     setTimeout(() => setStatus(""), 1500);
   };
 
   const onTest = async () => {
     setStatus("Testing…");
-    const ok = await ping(baseUrl);
-    setStatus(ok ? "Connection OK" : "Failed to connect");
+    const ok = await pingProvider({ mode, baseUrl });
+    setStatus(ok ? "Connection OK" : mode === "native" ? "Native module not available or ping failed" : "Failed to connect");
   };
 
   const onFetchModels = async () => {
     try {
       setStatus("Fetching models…");
-      const list = await getModels(baseUrl);
+      const list = await getModelsProvider({ mode, baseUrl });
       if (list.length) {
         setModel(list[0]);
         setStatus(`Found ${list.length} models. Selected: ${list[0]}`);
@@ -47,6 +48,18 @@ export default function SettingsScreen() {
 
   return (
     <View style={styles.container}>
+      <Text style={styles.sectionTitle}>Connection Mode</Text>
+      <View style={styles.modeRow}>
+        <TouchableOpacity onPress={() => setMode("remote")} style={[styles.modeBtn, mode === "remote" && styles.modeBtnActive]}>
+          <Text style={[styles.modeText, mode === "remote" && styles.modeTextActive]}>Remote HTTP</Text>
+        </TouchableOpacity>
+        <TouchableOpacity onPress={() => setMode("native")} style={[styles.modeBtn, mode === "native" && styles.modeBtnActive]}>
+          <Text style={[styles.modeText, mode === "native" && styles.modeTextActive]}>Native</Text>
+        </TouchableOpacity>
+      </View>
+      {mode === "native" ? (
+        <Text style={styles.hint}>Native mode requires a custom dev client/EAS build with the Ollama native module.</Text>
+      ) : null}
       <Text style={styles.label}>Host</Text>
       <TextInput
         style={styles.input}
@@ -91,16 +104,19 @@ export default function SettingsScreen() {
       </View>
 
       <Text style={styles.status}>{status}</Text>
-      <Text style={styles.hint}>
-        Tip: For Expo Go, connect to a desktop/laptop running Ollama on the same
-        LAN.
-      </Text>
+      <Text style={styles.hint}>Tip: For Expo Go, use Remote HTTP mode and connect to a desktop/laptop running Ollama on the same LAN.</Text>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
   container: { flex: 1, padding: 16 },
+  sectionTitle: { marginTop: 4, marginBottom: 6, fontWeight: "700", fontSize: 16 },
+  modeRow: { flexDirection: "row", gap: 8, marginBottom: 8 },
+  modeBtn: { paddingHorizontal: 12, paddingVertical: 8, borderRadius: 8, borderWidth: 1, borderColor: "#ccc", marginRight: 8 },
+  modeBtnActive: { backgroundColor: "#E6F0FF", borderColor: "#007AFF" },
+  modeText: { color: "#333" },
+  modeTextActive: { color: "#007AFF", fontWeight: "700" },
   label: { marginTop: 8, marginBottom: 4, fontWeight: "600" },
   input: {
     borderWidth: 1,

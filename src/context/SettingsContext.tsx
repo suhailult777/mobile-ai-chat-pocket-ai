@@ -5,12 +5,14 @@ export type Settings = {
   host: string;
   port: string;
   model: string;
+  mode: "remote" | "native";
 };
 
 export const defaultSettings: Settings = {
   host: "127.0.0.1",
   port: "11434",
   model: "tinyllama:latest",
+  mode: "remote",
 };
 
 export const SettingsContext = React.createContext<{
@@ -24,15 +26,17 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     (async () => {
       try {
-        const [host, port, model] = await Promise.all([
+        const [host, port, model, mode] = await Promise.all([
           SecureStore.getItemAsync("host"),
           SecureStore.getItemAsync("port"),
           SecureStore.getItemAsync("model"),
+          SecureStore.getItemAsync("mode"),
         ]);
         setSettings({
           host: host || defaultSettings.host,
           port: port || defaultSettings.port,
           model: model || defaultSettings.model,
+          mode: (mode as Settings["mode"]) || defaultSettings.mode,
         });
       } catch (e) {
         console.warn("Failed to load settings", e);
@@ -51,6 +55,8 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
           await SecureStore.setItemAsync("port", next.port);
         if (partial.model !== undefined)
           await SecureStore.setItemAsync("model", next.model);
+        if (partial.mode !== undefined)
+          await SecureStore.setItemAsync("mode", next.mode);
       } catch (e) {
         console.warn("Failed to save settings", e);
       }

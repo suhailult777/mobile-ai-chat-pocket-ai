@@ -8,7 +8,8 @@ import {
   ScrollView,
 } from "react-native";
 import { SettingsContext } from "../context/SettingsContext";
-import { streamChat, ChatMessage, ping, getModels } from "../lib/ollamaClient";
+import type { ChatMessage } from "../lib/ollamaClient";
+import { streamProvider, pingProvider, getModelsProvider } from "../lib/providerRouter";
 
 export default function ChatScreen() {
   const { settings, saveSettings } = useContext(SettingsContext);
@@ -43,17 +44,20 @@ export default function ChatScreen() {
     ]);
 
     // Preflight connectivity check to provide actionable errors
-    const ok = await ping(baseUrl);
+    const ok = await pingProvider({ mode: settings.mode, baseUrl });
     if (!ok) {
       setError(
-        `Cannot reach Ollama at ${baseUrl}. On Android emulator use http://10.0.2.2:11434; on device use your PC's LAN IP and run Ollama bound to 0.0.0.0.`
+        settings.mode === "native"
+          ? "Native module not available. Build a dev client/EAS with the Ollama native module."
+          : `Cannot reach Ollama at ${baseUrl}. On Android emulator use http://10.0.2.2:11434; on device use your PC's LAN IP and run Ollama bound to 0.0.0.0.`
       );
       return;
     }
 
     setIsStreaming(true);
 
-    const handle = streamChat({
+    const handle = streamProvider({
+      mode: settings.mode,
       baseUrl,
       model: settings.model,
       messages: history,
@@ -89,7 +93,7 @@ export default function ChatScreen() {
   const toggleModels = async () => {
     if (!showModels && models.length === 0) {
       try {
-        const list = await getModels(baseUrl);
+        const list = await getModelsProvider({ mode: settings.mode, baseUrl });
         setModels(list);
       } catch (e) {
         setError(`Models fetch failed: ${String((e as any)?.message || e)}`);
@@ -141,9 +145,8 @@ export default function ChatScreen() {
           </TouchableOpacity>
         )}
       </View>
-      <Text style={styles.hint}>
-        Connect your phone and Ollama host to the same LAN. Endpoint: {baseUrl}
-      </Text>
+      <Text style={styles.hint}>Connect your phone and Ollama host to the same LAN. Endpoint: {baseUrl}</Text>
+      <Text style={styles.hintSmall}>Mode: {settings.mode === "native" ? "Native (dev client required)" : "Remote HTTP"}</Text>
       <View style={styles.modelRow}>
         <TouchableOpacity
           onPress={toggleModels}
@@ -215,6 +218,7 @@ const styles = StyleSheet.create({
   stop: { backgroundColor: "#FF3B30" },
   buttonText: { color: "#fff", fontWeight: "700" },
   hint: { textAlign: "center", color: "#666", padding: 8, fontSize: 12 },
+  hintSmall: { textAlign: "center", color: "#888", paddingHorizontal: 8, fontSize: 11 },
   error: { color: "#e00", textAlign: "center", paddingHorizontal: 12 },
   modelRow: { flexDirection: "row", paddingHorizontal: 8, paddingBottom: 4 },
   modelButton: { backgroundColor: "#5856D6", marginRight: 8 },

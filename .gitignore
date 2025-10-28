@@ -1,0 +1,30 @@
+# Node
+node_modules/
+.npmrc
+
+# Expo/React Native
+.expo/
+.expo-shared/
+android/
+ios/
+build/
+dist/
+web-build/
+
+# Logs
+*.log
+logs/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Env
+.env
+.env.*
+
+# EAS
+*.jks
+*.keystore
+**/build-*.json
+**/credentials.json
