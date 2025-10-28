@@ -1,12 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
-import {
-  View,
-  Text,
-  SafeAreaView,
-  TouchableOpacity,
-  StyleSheet,
-  StatusBar,
-} from "react-native";
+import { View, Text, TouchableOpacity, StyleSheet, StatusBar } from "react-native";
 import * as SecureStore from "expo-secure-store";
 import ChatScreen from "./src/screens/ChatScreen";
 import SettingsScreen from "./src/screens/SettingsScreen";
@@ -23,10 +16,8 @@ export const defaultSettings: Settings = {
   model: "llama3",
 };
 
-export const SettingsContext = React.createContext<{
-  settings: Settings;
-  saveSettings: (s: Partial<Settings>) => Promise<void>;
-}>({ settings: defaultSettings, saveSettings: async () => {} });
+import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
+import { SettingsProvider } from './src/context/SettingsContext';
 
 export default function App() {
   const [tab, setTab] = useState<"chat" | "settings">("chat");
@@ -70,8 +61,9 @@ export default function App() {
   );
 
   return (
-    <SettingsContext.Provider value={{ settings, saveSettings }}>
-      <SafeAreaView style={styles.container}>
+    <SafeAreaProvider>
+      <SettingsProvider>
+        <SafeAreaView style={styles.container}>
         <StatusBar barStyle="dark-content" />
         <View style={styles.tabBar}>
           <TabButton
@@ -88,8 +80,9 @@ export default function App() {
         <View style={styles.content}>
           {tab === "chat" ? <ChatScreen /> : <SettingsScreen />}
         </View>
-      </SafeAreaView>
-    </SettingsContext.Provider>
+        </SafeAreaView>
+      </SettingsProvider>
+    </SafeAreaProvider>
   );
 }
 

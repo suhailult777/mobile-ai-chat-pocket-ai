@@ -7,11 +7,11 @@ import {
   StyleSheet,
   ScrollView,
 } from "react-native";
-import { SettingsContext } from "../../App";
-import { streamChat, ChatMessage, ping } from "../lib/ollamaClient";
+import { SettingsContext } from "../context/SettingsContext";
+import { streamChat, ChatMessage, ping, getModels } from "../lib/ollamaClient";
 
 export default function ChatScreen() {
-  const { settings } = useContext(SettingsContext);
+  const { settings, saveSettings } = useContext(SettingsContext);
   const baseUrl = useMemo(
     () => `http://${settings.host}:${settings.port}`,
     [settings.host, settings.port]
@@ -21,6 +21,8 @@ export default function ChatScreen() {
   const [input, setInput] = useState("");
   const [isStreaming, setIsStreaming] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [models, setModels] = useState<string[]>([]);
+  const [showModels, setShowModels] = useState(false);
 
   const scrollRef = useRef<ScrollView>(null);
   const streamRef = useRef<{ cancel: () => void } | null>(null);
@@ -84,6 +86,23 @@ export default function ChatScreen() {
     setIsStreaming(false);
   };
 
+  const toggleModels = async () => {
+    if (!showModels && models.length === 0) {
+      try {
+        const list = await getModels(baseUrl);
+        setModels(list);
+      } catch (e) {
+        setError(`Models fetch failed: ${String((e as any)?.message || e)}`);
+      }
+    }
+    setShowModels((v) => !v);
+  };
+
+  const chooseModel = async (m: string) => {
+    await saveSettings({ model: m });
+    setShowModels(false);
+  };
+
   return (
     <View style={styles.container}>
       <ScrollView ref={scrollRef} contentContainerStyle={styles.messages}>
@@ -125,6 +144,22 @@ export default function ChatScreen() {
       <Text style={styles.hint}>
         Connect your phone and Ollama host to the same LAN. Endpoint: {baseUrl}
       </Text>
+      <View style={styles.modelRow}>
+        <TouchableOpacity onPress={toggleModels} style={[styles.button, styles.modelButton]}>
+          <Text style={styles.buttonText}>Model: {settings.model}</Text>
+        </TouchableOpacity>
+      </View>
+      {showModels && (
+        <View style={styles.modelList}>
+          <ScrollView horizontal contentContainerStyle={styles.modelListInner}>
+            {models.map((m) => (
+              <TouchableOpacity key={m} onPress={() => chooseModel(m)} style={[styles.chip, m === settings.model && styles.chipActive]}>
+                <Text style={[styles.chipText, m === settings.model && styles.chipTextActive]}>{m}</Text>
+              </TouchableOpacity>
+            ))}
+          </ScrollView>
+        </View>
+      )}
     </View>
   );
 }
@@ -167,4 +202,12 @@ const styles = StyleSheet.create({
   buttonText: { color: "#fff", fontWeight: "700" },
   hint: { textAlign: "center", color: "#666", padding: 8, fontSize: 12 },
   error: { color: "#e00", textAlign: "center", paddingHorizontal: 12 },
+  modelRow: { flexDirection: 'row', paddingHorizontal: 8, paddingBottom: 4 },
+  modelButton: { backgroundColor: '#5856D6', marginRight: 8 },
+  modelList: { paddingHorizontal: 8, paddingBottom: 8 },
+  modelListInner: { alignItems: 'center' },
+  chip: { paddingHorizontal: 10, paddingVertical: 6, borderRadius: 16, borderWidth: 1, borderColor: '#ccc', marginRight: 8 },
+  chipActive: { backgroundColor: '#E6F0FF', borderColor: '#007AFF' },
+  chipText: { color: '#333' },
+  chipTextActive: { color: '#007AFF', fontWeight: '700' },
 });

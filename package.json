@@ -17,7 +17,8 @@
     "expo": "~54.0.0",
     "expo-secure-store": "~15.0.7",
     "react": "19.1.0",
-    "react-native": "0.81.5"
+    "react-native": "0.81.5",
+    "react-native-safe-area-context": "~5.6.0"
   },
   "devDependencies": {
     "@expo/cli": "^0.19.0",

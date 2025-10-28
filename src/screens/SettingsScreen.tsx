@@ -6,7 +6,7 @@ import {
   TouchableOpacity,
   StyleSheet,
 } from "react-native";
-import { SettingsContext } from "../../App";
+import { SettingsContext } from "../context/SettingsContext";
 import { getModels, ping } from "../lib/ollamaClient";
 
 export default function SettingsScreen() {
