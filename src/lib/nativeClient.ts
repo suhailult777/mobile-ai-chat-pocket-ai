@@ -1,4 +1,5 @@
 import { NativeEventEmitter, NativeModules } from "react-native";
+import { File } from "expo-file-system/next";
 import type { ChatMessage, StreamHandle } from "./ollamaClient";
 
 type StreamCallbacks = {
@@ -91,14 +92,58 @@ export function streamNative(
         );
       }
 
+      console.log("[nativeClient] Initializing llama.rn with model:", modelPath);
+
+      // Preflight validation: check file exists and is readable
+      const filePath = modelPath.replace(/^file:\/\//, "");
+      const fileUri = `file://${filePath}`;
+
+      console.log("[nativeClient] Checking if model file exists:", filePath);
+      try {
+        const modelFile = new File(fileUri);
+        const fileExists = await modelFile.exists;
+        if (!fileExists) {
+          throw new Error(
+            `Model file not found at path: ${filePath}\n\nPlease re-import the model using the Model Browser in Settings.`
+          );
+        }
+
+        // Check file size
+        const sizeMB = ((modelFile.size || 0) / (1024 * 1024)).toFixed(2);
+        console.log(`[nativeClient] Model file size: ${sizeMB} MB`);
+      } catch (fileErr: any) {
+        throw new Error(
+          `Cannot access model file: ${fileErr?.message || fileErr}`
+        );
+      }
+
+      // Validate GGUF format using llama.rn's model info loader
+      console.log("[nativeClient] Validating GGUF format...");
+      const { loadLlamaModelInfo } = lrn;
+      if (typeof loadLlamaModelInfo === "function") {
+        try {
+          const modelInfo = await loadLlamaModelInfo(filePath);
+          console.log("[nativeClient] Model validation successful:", modelInfo);
+        } catch (validationErr: any) {
+          throw new Error(
+            `Invalid or corrupted GGUF file: ${validationErr?.message || validationErr}\n\nPlease ensure you're using a valid GGUF model file.`
+          );
+        }
+      }
+
+      // Use safer defaults to avoid context initialization failures:
+      // - Lower n_ctx (512 is llama.cpp default, 2048 may be too large for some models/devices)
+      // - Disable use_mlock on Android (may fail to lock memory pages)
+      // - Keep n_gpu_layers at 0 for CPU-only mode (broadest compatibility)
+      console.log("[nativeClient] Creating context with n_ctx=512, cpu-only...");
       const context = await initLlama({
         model: modelPath,
-        // conservative defaults; users can tune later via advanced UI
-        n_ctx: 2048,
-        // n_gpu_layers can be tuned later; default 0 (CPU-only) for broadest compatibility
+        n_ctx: 512,
         n_gpu_layers: 0,
-        use_mlock: true,
+        use_mlock: false,
       });
+
+      console.log("[nativeClient] Context initialized successfully");
 
       // Common stop tokens from llama.cpp examples
       const stopWords = [
@@ -134,9 +179,11 @@ export function streamNative(
         if (tail) opts.onToken(tail);
         opts.onDone && opts.onDone();
       }
-    } catch (e) {
+    } catch (e: any) {
       if (!active) return;
-      opts.onError && opts.onError(e);
+      console.error("[nativeClient] Error in streamNative:", e);
+      const errorMsg = e?.message || String(e);
+      opts.onError && opts.onError(new Error(`Native mode error: ${errorMsg}`));
     }
   })();
 

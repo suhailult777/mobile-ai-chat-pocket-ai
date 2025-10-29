@@ -152,12 +152,41 @@ export default function ChatScreen() {
       <Text style={styles.hint}>
         Connect your phone and Ollama host to the same LAN. Endpoint: {baseUrl}
       </Text>
-      <Text style={styles.hintSmall}>
-        Mode:{" "}
-        {settings.mode === "native"
-          ? "Native (dev client required)"
-          : "Remote HTTP"}
-      </Text>
+      <View style={styles.modeRow}>
+        <Text style={styles.label}>Mode:</Text>
+        <TouchableOpacity
+          onPress={() => saveSettings({ mode: "remote" })}
+          style={[
+            styles.modeBtn,
+            settings.mode === "remote" && styles.modeBtnActive,
+          ]}
+        >
+          <Text
+            style={[
+              styles.modeText,
+              settings.mode === "remote" && styles.modeTextActive,
+            ]}
+          >
+            Remote HTTP
+          </Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          onPress={() => saveSettings({ mode: "native" })}
+          style={[
+            styles.modeBtn,
+            settings.mode === "native" && styles.modeBtnActive,
+          ]}
+        >
+          <Text
+            style={[
+              styles.modeText,
+              settings.mode === "native" && styles.modeTextActive,
+            ]}
+          >
+            Native
+          </Text>
+        </TouchableOpacity>
+      </View>
       <View style={styles.modelRow}>
         <TouchableOpacity
           onPress={toggleModels}
@@ -236,6 +265,25 @@ const styles = StyleSheet.create({
     fontSize: 11,
   },
   error: { color: "#e00", textAlign: "center", paddingHorizontal: 12 },
+  modeRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    paddingHorizontal: 8,
+    paddingVertical: 8,
+  },
+  label: { fontSize: 13, color: "#333", fontWeight: "600" },
+  modeBtn: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "#ccc",
+  },
+  modeBtnActive: { backgroundColor: "#E6F0FF", borderColor: "#007AFF" },
+  modeText: { color: "#333", fontSize: 12 },
+  modeTextActive: { color: "#007AFF", fontWeight: "700" },
   modelRow: { flexDirection: "row", paddingHorizontal: 8, paddingBottom: 4 },
   modelButton: { backgroundColor: "#5856D6", marginRight: 8 },
   modelList: { paddingHorizontal: 8, paddingBottom: 8 },

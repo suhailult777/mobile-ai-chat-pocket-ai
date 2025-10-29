@@ -10,7 +10,7 @@ import {
 import { SettingsContext } from "../context/SettingsContext";
 import { getModelsProvider, pingProvider } from "../lib/providerRouter";
 import { getModelsDirNative, isNativeAvailable } from "../lib/nativeClient";
-import * as FileSystem from "expo-file-system";
+import { File, Directory, Paths } from "expo-file-system";
 import * as DocumentPicker from "expo-document-picker";
 
 export default function SettingsScreen() {
@@ -72,7 +72,8 @@ export default function SettingsScreen() {
 
   return (
     <View style={styles.container}>
-      <Text style={styles.sectionTitle}>Connection Mode</Text>
+      <ScrollView contentContainerStyle={styles.scrollContent}>
+        <Text style={styles.sectionTitle}>Connection Mode</Text>
       <View style={styles.modeRow}>
         <TouchableOpacity
           onPress={() => setMode("remote")}
@@ -161,15 +162,15 @@ export default function SettingsScreen() {
               <TouchableOpacity
                 onPress={async () => {
                   try {
-                    const doc = (FileSystem as any).documentDirectory || "";
-                    const dir = doc + "models/";
-                    const info = await FileSystem.getInfoAsync(dir);
-                    if (!info.exists) {
-                      await FileSystem.makeDirectoryAsync(dir, { intermediates: true });
+                    const modelsDirectory = new Directory(Paths.document, "models");
+                    if (!(await modelsDirectory.exists)) {
+                      await modelsDirectory.create();
                     }
-                    setModelsDir(dir);
-                    const files = await FileSystem.readDirectoryAsync(dir);
-                    const ggufs = files.filter((f) => f.toLowerCase().endsWith(".gguf")).map((f) => dir + f);
+                    setModelsDir(modelsDirectory.uri);
+                    const contents = await modelsDirectory.list();
+                    const ggufs = contents
+                      .filter((item) => item instanceof File && item.name.toLowerCase().endsWith(".gguf"))
+                      .map((item) => item.uri);
                     setBrowserFiles(ggufs);
                     setShowBrowser(true);
                   } catch (e: any) {
@@ -183,7 +184,11 @@ export default function SettingsScreen() {
               <TouchableOpacity
                 onPress={async () => {
                   try {
-                    const res = await DocumentPicker.getDocumentAsync({ copyToCacheDirectory: false, type: "*/*", multiple: false });
+                    const res = await DocumentPicker.getDocumentAsync({ 
+                      copyToCacheDirectory: true, 
+                      type: "*/*", 
+                      multiple: false 
+                    });
                     if (res.canceled) return;
                     const file = res.assets?.[0];
                     if (!file) return;
@@ -191,24 +196,23 @@ export default function SettingsScreen() {
                       setStatus("Please select a .gguf file");
                       return;
                     }
-                    const doc = (FileSystem as any).documentDirectory || "";
-                    const dir = doc + "models/";
-                    const info = await FileSystem.getInfoAsync(dir);
-                    if (!info.exists) {
-                      await FileSystem.makeDirectoryAsync(dir, { intermediates: true });
+                    const modelsDirectory = new Directory(Paths.document, "models");
+                    if (!(await modelsDirectory.exists)) {
+                      await modelsDirectory.create();
                     }
-                    const dest = dir + file.name;
-                    if (file.uri.startsWith("file://")) {
-                      await FileSystem.copyAsync({ from: file.uri, to: dest });
-                      setStatus(`Imported: ${file.name}`);
-                      const files = await FileSystem.readDirectoryAsync(dir);
-                      const ggufs = files.filter((f) => f.toLowerCase().endsWith(".gguf")).map((f) => dir + f);
-                      setModelsDir(dir);
-                      setBrowserFiles(ggufs);
-                      setShowBrowser(true);
-                    } else {
-                      setStatus("Selected file is not a file:// URI. Please move the model to an accessible file path.");
-                    }
+                    // Copy from cache to models directory using new File API
+                    const cachedFile = new File(file.uri);
+                    await cachedFile.copy(modelsDirectory);
+                    setStatus(`Imported: ${file.name}`);
+                    
+                    // Refresh the browser list
+                    const contents = await modelsDirectory.list();
+                    const ggufs = contents
+                      .filter((item) => item instanceof File && item.name.toLowerCase().endsWith(".gguf"))
+                      .map((item) => item.uri);
+                    setModelsDir(modelsDirectory.uri);
+                    setBrowserFiles(ggufs);
+                    setShowBrowser(true);
                   } catch (e: any) {
                     setStatus(`Import error: ${e?.message || String(e)}`);
                   }
@@ -251,12 +255,14 @@ export default function SettingsScreen() {
         Tip: For Expo Go, use Remote HTTP mode and connect to a desktop/laptop
         running Ollama on the same LAN.
       </Text>
+      </ScrollView>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, padding: 16 },
+  container: { flex: 1 },
+  scrollContent: { padding: 16, paddingBottom: 40 },
   sectionTitle: {
     marginTop: 4,
     marginBottom: 6,
