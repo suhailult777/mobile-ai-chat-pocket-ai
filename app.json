@@ -16,13 +16,21 @@
     "runtimeVersion": {
       "policy": "fingerprint"
     },
-    "platforms": ["android", "ios", "web"],
+    "platforms": [
+      "android",
+      "ios",
+      "web"
+    ],
     "android": {
       "package": "com.ollamamobile.app",
       "versionCode": 1,
       "permissions": [],
       "usesCleartextTraffic": true
     },
-    "extra": {}
+    "extra": {
+      "eas": {
+        "projectId": "0a6f1c69-b232-40e3-9e6d-f3b2ed34980d"
+      }
+    }
   }
 }
