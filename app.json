@@ -5,6 +5,7 @@
     "version": "0.1.0",
     "orientation": "portrait",
     "plugins": [
+      "expo-dev-client",
       [
         "expo-secure-store",
         {
