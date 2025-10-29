@@ -46,7 +46,9 @@ export default function SettingsScreen() {
     if (mode === "native") {
       // Try to surface optional native details for Phase 3
       const avail = isNativeAvailable();
-      let info = avail ? "Native module detected." : "Native module not detected.";
+      let info = avail
+        ? "Native module detected."
+        : "Native module not detected.";
       const dir = await getModelsDirNative();
       if (dir) info += ` Models dir: ${dir}`;
       setNativeInfo(info);
@@ -74,189 +76,221 @@ export default function SettingsScreen() {
     <View style={styles.container}>
       <ScrollView contentContainerStyle={styles.scrollContent}>
         <Text style={styles.sectionTitle}>Connection Mode</Text>
-      <View style={styles.modeRow}>
-        <TouchableOpacity
-          onPress={() => setMode("remote")}
-          style={[styles.modeBtn, mode === "remote" && styles.modeBtnActive]}
-        >
-          <Text
-            style={[
-              styles.modeText,
-              mode === "remote" && styles.modeTextActive,
-            ]}
+        <View style={styles.modeRow}>
+          <TouchableOpacity
+            onPress={() => setMode("remote")}
+            style={[styles.modeBtn, mode === "remote" && styles.modeBtnActive]}
           >
-            Remote HTTP
-          </Text>
-        </TouchableOpacity>
-        <TouchableOpacity
-          onPress={() => setMode("native")}
-          style={[styles.modeBtn, mode === "native" && styles.modeBtnActive]}
-        >
-          <Text
-            style={[
-              styles.modeText,
-              mode === "native" && styles.modeTextActive,
-            ]}
+            <Text
+              style={[
+                styles.modeText,
+                mode === "remote" && styles.modeTextActive,
+              ]}
+            >
+              Remote HTTP
+            </Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            onPress={() => setMode("native")}
+            style={[styles.modeBtn, mode === "native" && styles.modeBtnActive]}
           >
-            Native
+            <Text
+              style={[
+                styles.modeText,
+                mode === "native" && styles.modeTextActive,
+              ]}
+            >
+              Native
+            </Text>
+          </TouchableOpacity>
+        </View>
+        {mode === "native" ? (
+          <Text style={styles.hint}>
+            Native mode requires a custom dev client/EAS build with the Ollama
+            native module.
           </Text>
-        </TouchableOpacity>
-      </View>
-      {mode === "native" ? (
+        ) : null}
+        {mode === "native" && !!nativeInfo ? (
+          <Text style={styles.hintSmall}>{nativeInfo}</Text>
+        ) : null}
+        <Text style={styles.label}>Host</Text>
+        <TextInput
+          style={styles.input}
+          value={host}
+          onChangeText={setHost}
+          placeholder="127.0.0.1"
+        />
+
+        <Text style={styles.label}>Port</Text>
+        <TextInput
+          style={styles.input}
+          value={port}
+          onChangeText={setPort}
+          placeholder="11434"
+          keyboardType="numeric"
+        />
+
+        <Text style={styles.label}>Model</Text>
+        <TextInput
+          style={styles.input}
+          value={model}
+          onChangeText={setModel}
+          placeholder="llama3"
+        />
+
+        <View style={styles.row}>
+          <TouchableOpacity onPress={onSave} style={styles.button}>
+            <Text style={styles.buttonText}>Save</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            onPress={onTest}
+            style={[styles.button, styles.secondary]}
+          >
+            <Text style={styles.buttonText}>Test</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            onPress={onFetchModels}
+            style={[styles.button, styles.secondary]}
+          >
+            <Text style={styles.buttonText}>Fetch Models</Text>
+          </TouchableOpacity>
+        </View>
+
+        {mode === "native" && (
+          <>
+            <View style={styles.browserHeader}>
+              <Text style={styles.sectionTitle}>Model Browser (Native)</Text>
+              <View style={styles.row}>
+                <TouchableOpacity
+                  onPress={async () => {
+                    try {
+                      const modelsDirectory = new Directory(
+                        Paths.document,
+                        "models"
+                      );
+                      if (!(await modelsDirectory.exists)) {
+                        await modelsDirectory.create();
+                      }
+                      setModelsDir(modelsDirectory.uri);
+                      const contents = await modelsDirectory.list();
+                      const ggufs = contents
+                        .filter(
+                          (item) =>
+                            item instanceof File &&
+                            item.name.toLowerCase().endsWith(".gguf") &&
+                            (item.size || 0) > 0
+                        )
+                        .map((item) => item.uri);
+                      setBrowserFiles(ggufs);
+                      setShowBrowser(true);
+                    } catch (e: any) {
+                      setStatus(`Browser error: ${e?.message || String(e)}`);
+                    }
+                  }}
+                  style={[styles.button, styles.secondary]}
+                >
+                  <Text style={styles.buttonText}>Open Browser</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  onPress={async () => {
+                    try {
+                      const res = await DocumentPicker.getDocumentAsync({
+                        copyToCacheDirectory: true,
+                        type: "*/*",
+                        multiple: false,
+                      });
+                      if (res.canceled) return;
+                      const file = res.assets?.[0];
+                      if (!file) return;
+                      if (!file.name.toLowerCase().endsWith(".gguf")) {
+                        setStatus("Please select a .gguf file");
+                        return;
+                      }
+                      const modelsDirectory = new Directory(
+                        Paths.document,
+                        "models"
+                      );
+                      if (!(await modelsDirectory.exists)) {
+                        await modelsDirectory.create();
+                      }
+                      // Copy from cache to models directory using new File API
+                      // Need to specify destination file with proper name
+                      const cachedFile = new File(file.uri);
+                      const destinationFile = new File(
+                        modelsDirectory.uri,
+                        file.name
+                      );
+                      await cachedFile.copy(destinationFile);
+                      // Persist selection to use the just-imported model immediately
+                      setModel(destinationFile.uri);
+                      await saveSettings({ model: destinationFile.uri });
+                      setStatus(
+                        `Imported and selected: ${file.name} (${(
+                          (destinationFile.size || 0) /
+                          (1024 * 1024)
+                        ).toFixed(2)} MB)`
+                      );
+
+                      // Refresh the browser list
+                      const contents = await modelsDirectory.list();
+                      const ggufs = contents
+                        .filter(
+                          (item) =>
+                            item instanceof File &&
+                            item.name.toLowerCase().endsWith(".gguf") &&
+                            (item.size || 0) > 0
+                        )
+                        .map((item) => item.uri);
+                      setModelsDir(modelsDirectory.uri);
+                      setBrowserFiles(ggufs);
+                      setShowBrowser(true);
+                    } catch (e: any) {
+                      setStatus(`Import error: ${e?.message || String(e)}`);
+                    }
+                  }}
+                  style={[styles.button, styles.secondary]}
+                >
+                  <Text style={styles.buttonText}>Import GGUF</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+            {showBrowser && (
+              <View style={styles.browserPanel}>
+                <Text style={styles.hintSmall}>
+                  Models directory: {modelsDir || "(app documents)/models/"}
+                </Text>
+                {browserFiles.length === 0 ? (
+                  <Text style={styles.hintSmall}>No .gguf files found.</Text>
+                ) : (
+                  <ScrollView
+                    style={{ maxHeight: 160 }}
+                    contentContainerStyle={{ paddingVertical: 6 }}
+                  >
+                    {browserFiles.map((p) => (
+                      <TouchableOpacity
+                        key={p}
+                        onPress={async () => {
+                          setModel(p);
+                          await saveSettings({ model: p });
+                          setStatus(`Selected model: ${p}`);
+                        }}
+                        style={styles.fileItem}
+                      >
+                        <Text style={styles.fileText}>{p}</Text>
+                      </TouchableOpacity>
+                    ))}
+                  </ScrollView>
+                )}
+              </View>
+            )}
+          </>
+        )}
+
+        <Text style={styles.status}>{status}</Text>
         <Text style={styles.hint}>
-          Native mode requires a custom dev client/EAS build with the Ollama
-          native module.
+          Tip: For Expo Go, use Remote HTTP mode and connect to a desktop/laptop
+          running Ollama on the same LAN.
         </Text>
-      ) : null}
-      {mode === "native" && !!nativeInfo ? (
-        <Text style={styles.hintSmall}>{nativeInfo}</Text>
-      ) : null}
-      <Text style={styles.label}>Host</Text>
-      <TextInput
-        style={styles.input}
-        value={host}
-        onChangeText={setHost}
-        placeholder="127.0.0.1"
-      />
-
-      <Text style={styles.label}>Port</Text>
-      <TextInput
-        style={styles.input}
-        value={port}
-        onChangeText={setPort}
-        placeholder="11434"
-        keyboardType="numeric"
-      />
-
-      <Text style={styles.label}>Model</Text>
-      <TextInput
-        style={styles.input}
-        value={model}
-        onChangeText={setModel}
-        placeholder="llama3"
-      />
-
-      <View style={styles.row}>
-        <TouchableOpacity onPress={onSave} style={styles.button}>
-          <Text style={styles.buttonText}>Save</Text>
-        </TouchableOpacity>
-        <TouchableOpacity
-          onPress={onTest}
-          style={[styles.button, styles.secondary]}
-        >
-          <Text style={styles.buttonText}>Test</Text>
-        </TouchableOpacity>
-        <TouchableOpacity
-          onPress={onFetchModels}
-          style={[styles.button, styles.secondary]}
-        >
-          <Text style={styles.buttonText}>Fetch Models</Text>
-        </TouchableOpacity>
-      </View>
-
-      {mode === "native" && (
-        <>
-          <View style={styles.browserHeader}>
-            <Text style={styles.sectionTitle}>Model Browser (Native)</Text>
-            <View style={styles.row}>
-              <TouchableOpacity
-                onPress={async () => {
-                  try {
-                    const modelsDirectory = new Directory(Paths.document, "models");
-                    if (!(await modelsDirectory.exists)) {
-                      await modelsDirectory.create();
-                    }
-                    setModelsDir(modelsDirectory.uri);
-                    const contents = await modelsDirectory.list();
-                    const ggufs = contents
-                      .filter((item) => item instanceof File && item.name.toLowerCase().endsWith(".gguf"))
-                      .map((item) => item.uri);
-                    setBrowserFiles(ggufs);
-                    setShowBrowser(true);
-                  } catch (e: any) {
-                    setStatus(`Browser error: ${e?.message || String(e)}`);
-                  }
-                }}
-                style={[styles.button, styles.secondary]}
-              >
-                <Text style={styles.buttonText}>Open Browser</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                onPress={async () => {
-                  try {
-                    const res = await DocumentPicker.getDocumentAsync({ 
-                      copyToCacheDirectory: true, 
-                      type: "*/*", 
-                      multiple: false 
-                    });
-                    if (res.canceled) return;
-                    const file = res.assets?.[0];
-                    if (!file) return;
-                    if (!file.name.toLowerCase().endsWith(".gguf")) {
-                      setStatus("Please select a .gguf file");
-                      return;
-                    }
-                    const modelsDirectory = new Directory(Paths.document, "models");
-                    if (!(await modelsDirectory.exists)) {
-                      await modelsDirectory.create();
-                    }
-                    // Copy from cache to models directory using new File API
-                    // Need to specify destination file with proper name
-                    const cachedFile = new File(file.uri);
-                    const destinationFile = new File(modelsDirectory.uri, file.name);
-                    await cachedFile.copy(destinationFile);
-                    setStatus(`Imported: ${file.name} (${(destinationFile.size / (1024 * 1024)).toFixed(2)} MB)`);
-                    
-                    // Refresh the browser list
-                    const contents = await modelsDirectory.list();
-                    const ggufs = contents
-                      .filter((item) => item instanceof File && item.name.toLowerCase().endsWith(".gguf"))
-                      .map((item) => item.uri);
-                    setModelsDir(modelsDirectory.uri);
-                    setBrowserFiles(ggufs);
-                    setShowBrowser(true);
-                  } catch (e: any) {
-                    setStatus(`Import error: ${e?.message || String(e)}`);
-                  }
-                }}
-                style={[styles.button, styles.secondary]}
-              >
-                <Text style={styles.buttonText}>Import GGUF</Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-          {showBrowser && (
-            <View style={styles.browserPanel}>
-              <Text style={styles.hintSmall}>Models directory: {modelsDir || "(app documents)/models/"}</Text>
-              {browserFiles.length === 0 ? (
-                <Text style={styles.hintSmall}>No .gguf files found.</Text>
-              ) : (
-                <ScrollView style={{ maxHeight: 160 }} contentContainerStyle={{ paddingVertical: 6 }}>
-                  {browserFiles.map((p) => (
-                    <TouchableOpacity
-                      key={p}
-                      onPress={async () => {
-                        setModel(p);
-                        await saveSettings({ model: p });
-                        setStatus(`Selected model: ${p}`);
-                      }}
-                      style={styles.fileItem}
-                    >
-                      <Text style={styles.fileText}>{p}</Text>
-                    </TouchableOpacity>
-                  ))}
-                </ScrollView>
-              )}
-            </View>
-          )}
-        </>
-      )}
-
-      <Text style={styles.status}>{status}</Text>
-      <Text style={styles.hint}>
-        Tip: For Expo Go, use Remote HTTP mode and connect to a desktop/laptop
-        running Ollama on the same LAN.
-      </Text>
       </ScrollView>
     </View>
   );

@@ -92,7 +92,10 @@ export function streamNative(
         );
       }
 
-      console.log("[nativeClient] Initializing llama.rn with model:", modelPath);
+      console.log(
+        "[nativeClient] Initializing llama.rn with model:",
+        modelPath
+      );
 
       // Preflight validation: check file exists and is readable
       const filePath = modelPath.replace(/^file:\/\//, "");
@@ -126,7 +129,9 @@ export function streamNative(
           console.log("[nativeClient] Model validation successful:", modelInfo);
         } catch (validationErr: any) {
           throw new Error(
-            `Invalid or corrupted GGUF file: ${validationErr?.message || validationErr}\n\nPlease ensure you're using a valid GGUF model file.`
+            `Invalid or corrupted GGUF file: ${
+              validationErr?.message || validationErr
+            }\n\nPlease ensure you're using a valid GGUF model file.`
           );
         }
       }
@@ -135,7 +140,9 @@ export function streamNative(
       // - Lower n_ctx (512 is llama.cpp default, 2048 may be too large for some models/devices)
       // - Disable use_mlock on Android (may fail to lock memory pages)
       // - Keep n_gpu_layers at 0 for CPU-only mode (broadest compatibility)
-      console.log("[nativeClient] Creating context with n_ctx=512, cpu-only...");
+      console.log(
+        "[nativeClient] Creating context with n_ctx=512, cpu-only..."
+      );
       const context = await initLlama({
         model: modelPath,
         n_ctx: 512,

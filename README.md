@@ -76,6 +76,7 @@ npx eas build --profile development --platform android
 This option uses a React Native llama.cpp library for on-device inference and streams tokens via the existing Native provider.
 
 High-level steps:
+
 - Add a RN llama.cpp library (e.g., @mybigday/llama.rn or similar)
 - Build an Android dev client (EAS) to include native code
 - Provide a native bridge that exposes: `ping()`, `getModels()`, `startChat({ model, messages })`, `stopChat()` and emits `OllamaToken`, `OllamaDone`, `OllamaError`
@@ -100,9 +101,10 @@ pnpm run start:dev
 ```
 
 Notes:
+
 - The app’s Native client expects the module name `OllamaNative` or `Ollama` with the methods/events shown above. If your chosen library uses a different module name or API, implement a thin native bridge that adapts to this contract.
 - In Native mode, the `Settings` screen shows a quick connectivity test. When the native module is available, it may also display the models directory (if your bridge implements `getModelsDir`).
- - If using the built-in `llama.rn` JS fallback (no custom NativeModule), set `Settings → Model` to a `file://` path of your GGUF model (e.g., `file:///storage/emulated/0/Android/data/<package>/files/models/tinyllama.Q4_0.gguf`).
+- If using the built-in `llama.rn` JS fallback (no custom NativeModule), set `Settings → Model` to a `file://` path of your GGUF model (e.g., `file:///storage/emulated/0/Android/data/<package>/files/models/tinyllama.Q4_0.gguf`).
 
 - Implement a native module that matches the stub contract above, then rebuild your dev client. Once present, switch Settings -> Connection Mode to Native.
 

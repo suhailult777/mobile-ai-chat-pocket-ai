@@ -6,8 +6,8 @@
  * @returns {import('@expo/config-types').ExpoConfig}
  */
 function withOllamaNative(config) {
-  // Future: add android.manifest permissions or Gradle settings if needed.
-  return config;
+    // Future: add android.manifest permissions or Gradle settings if needed.
+    return config;
 }
 
 module.exports = withOllamaNative;
