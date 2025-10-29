@@ -14,6 +14,16 @@
           }
         }
       ],
+      [
+        "llama.rn",
+        {
+          "enableEntitlements": true,
+          "entitlementsProfile": "production",
+          "forceCxx20": true,
+          "enableOpenCL": true
+        }
+      ],
+      "./plugins/with-ollama-native",
       "expo-dev-client",
       [
         "expo-secure-store",
@@ -25,11 +35,7 @@
     "runtimeVersion": {
       "policy": "fingerprint"
     },
-    "platforms": [
-      "android",
-      "ios",
-      "web"
-    ],
+    "platforms": ["android", "ios", "web"],
     "android": {
       "package": "com.ollamamobile.app",
       "versionCode": 1,

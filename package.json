@@ -18,7 +18,10 @@
     "expo": "54.0.21",
     "expo-build-properties": "~1.0.9",
     "expo-dev-client": "~6.0.16",
+    "expo-document-picker": "^14.0.7",
+    "expo-file-system": "^19.0.17",
     "expo-secure-store": "~15.0.7",
+    "llama.rn": "^0.8.0",
     "react": "19.1.0",
     "react-native": "0.81.5",
     "react-native-safe-area-context": "~5.6.0"

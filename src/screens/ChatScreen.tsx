@@ -9,7 +9,11 @@ import {
 } from "react-native";
 import { SettingsContext } from "../context/SettingsContext";
 import type { ChatMessage } from "../lib/ollamaClient";
-import { streamProvider, pingProvider, getModelsProvider } from "../lib/providerRouter";
+import {
+  streamProvider,
+  pingProvider,
+  getModelsProvider,
+} from "../lib/providerRouter";
 
 export default function ChatScreen() {
   const { settings, saveSettings } = useContext(SettingsContext);
@@ -145,8 +149,15 @@ export default function ChatScreen() {
           </TouchableOpacity>
         )}
       </View>
-      <Text style={styles.hint}>Connect your phone and Ollama host to the same LAN. Endpoint: {baseUrl}</Text>
-      <Text style={styles.hintSmall}>Mode: {settings.mode === "native" ? "Native (dev client required)" : "Remote HTTP"}</Text>
+      <Text style={styles.hint}>
+        Connect your phone and Ollama host to the same LAN. Endpoint: {baseUrl}
+      </Text>
+      <Text style={styles.hintSmall}>
+        Mode:{" "}
+        {settings.mode === "native"
+          ? "Native (dev client required)"
+          : "Remote HTTP"}
+      </Text>
       <View style={styles.modelRow}>
         <TouchableOpacity
           onPress={toggleModels}
@@ -218,7 +229,12 @@ const styles = StyleSheet.create({
   stop: { backgroundColor: "#FF3B30" },
   buttonText: { color: "#fff", fontWeight: "700" },
   hint: { textAlign: "center", color: "#666", padding: 8, fontSize: 12 },
-  hintSmall: { textAlign: "center", color: "#888", paddingHorizontal: 8, fontSize: 11 },
+  hintSmall: {
+    textAlign: "center",
+    color: "#888",
+    paddingHorizontal: 8,
+    fontSize: 11,
+  },
   error: { color: "#e00", textAlign: "center", paddingHorizontal: 12 },
   modelRow: { flexDirection: "row", paddingHorizontal: 8, paddingBottom: 4 },
   modelButton: { backgroundColor: "#5856D6", marginRight: 8 },
