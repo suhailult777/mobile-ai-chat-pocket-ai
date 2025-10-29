@@ -201,9 +201,11 @@ export default function SettingsScreen() {
                       await modelsDirectory.create();
                     }
                     // Copy from cache to models directory using new File API
+                    // Need to specify destination file with proper name
                     const cachedFile = new File(file.uri);
-                    await cachedFile.copy(modelsDirectory);
-                    setStatus(`Imported: ${file.name}`);
+                    const destinationFile = new File(modelsDirectory.uri, file.name);
+                    await cachedFile.copy(destinationFile);
+                    setStatus(`Imported: ${file.name} (${(destinationFile.size / (1024 * 1024)).toFixed(2)} MB)`);
                     
                     // Refresh the browser list
                     const contents = await modelsDirectory.list();
