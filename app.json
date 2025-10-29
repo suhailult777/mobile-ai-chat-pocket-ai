@@ -5,6 +5,15 @@
     "version": "0.1.0",
     "orientation": "portrait",
     "plugins": [
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "gradleVersion": "8.7",
+            "androidGradlePluginVersion": "8.5.2"
+          }
+        }
+      ],
       "expo-dev-client",
       [
         "expo-secure-store",
