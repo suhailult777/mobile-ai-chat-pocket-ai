@@ -1,6 +1,5 @@
 # Node
 node_modules/
-.npmrc
 
 # Expo/React Native
 .expo/
