@@ -23,10 +23,6 @@
       "permissions": [],
       "usesCleartextTraffic": true
     },
-    "extra": {
-      "eas": {
-        "projectId": "__REPLACE_WITH_NEW_PROJECT_ID__"
-      }
-    }
+    "extra": {}
   }
 }
