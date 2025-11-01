@@ -1,56 +1,102 @@
 ## Copilot / AI Agent Instructions — Ollama Mobile
 
-Purpose: give AI coding agents the minimum, concrete context to be productive in this repo. Keep edits small, respect existing data flow and provider contracts.
+**Purpose:** Help AI agents contribute productively by documenting architecture, data flow, and project-specific patterns. Keep edits small and respect provider contracts.
 
-1. What this app is
+### What this app is
 
-- Expo-managed React Native + TypeScript chat client for Ollama over localhost/LAN.
-- Two modes via a provider router: Remote HTTP (works in Expo Go) and Native (dev client/EAS; stubbed until a native module exists).
+- Expo React Native chat client for Ollama (localhost/LAN) with two connection modes
+- **Remote mode** (HTTP/Expo Go): connects to Ollama `/api/chat` endpoint on any LAN host
+- **Native mode** (dev client/EAS): runs llama.cpp locally via `llama.rn` (Phase 3) or custom native module
 
-2. Architecture and data flow
+### Architecture & Data Flow
 
-- UI: `App.tsx` renders two screens: `ChatScreen` and `SettingsScreen`.
-- State: `src/context/SettingsContext.tsx` is the single source of truth (host, port, model, mode) persisted with `expo-secure-store` via `saveSettings`.
-- Provider: `src/lib/providerRouter.ts` exposes `pingProvider`, `getModelsProvider`, `streamProvider` and routes to HTTP or Native.
-- HTTP client: `src/lib/ollamaClient.ts` uses `XMLHttpRequest` to stream NDJSON; core loop is `parseNew` with `lastIndex` and a line buffer. It emits tokens via `onToken` and calls `onDone` on flush.
-- Native stub: `src/lib/nativeClient.ts` calls a module named `OllamaNative` or `Ollama`, wiring events `OllamaToken`, `OllamaDone`, `OllamaError`.
-- Chat flow: `ChatScreen` builds history, seeds an empty assistant message, calls `streamProvider`, and appends tokens to the last assistant message.
+**State Management** (`src/context/SettingsContext.tsx`)
 
-3. Dev workflow (Windows PowerShell examples)
+- Single source of truth: `{ host, port, model, mode }` persisted via `expo-secure-store`
+- All settings changes must use `saveSettings()` to keep SecureStore in sync
 
-- Install deps: `npm install`
-- Start Expo: `npm start`
-- Open on Android (Expo Go): `npm run android`
-- Typecheck: `npm run typecheck`
+**Provider Router** (`src/lib/providerRouter.ts`)
 
-4. Integration points (Ollama and Native)
+- **Three entry points:** `pingProvider()`, `getModelsProvider()`, `streamProvider()`
+- Routes requests based on `mode` ("remote" | "native") — never call HTTP or Native clients directly from UI
+- Receives `baseUrl` only for remote mode; ignores it for native
 
-- HTTP: `/api/chat` (stream), `/api/tags` or `/api/models` (list), `/api/version` (ping).
-- `getModels` auto-falls back from `/api/tags` to `/api/models` and normalizes shapes.
-- Native contract (if present): `ping()`, `getModels()`, `startChat({ model, messages })`, `stopChat()` + events above.
+**HTTP Client** (`src/lib/ollamaClient.ts`)
 
-5. Project-specific conventions and gotchas
+- Uses `XMLHttpRequest` to stream Ollama's NDJSON (`/api/chat` endpoint)
+- **Critical pattern:** `parseNew()` tracks `lastIndex` and maintains a line buffer; handles incomplete JSON gracefully
+- On `readyState === 3` (LOADING): parse tokens; on `readyState === 4` (DONE): flush final buffer
+- Emits tokens via `onToken(t)` callback; calls `onDone()` on completion
+- Fallback: tries `/api/tags` first, then `/api/models` for model list
 
-- Always invoke provider router from screens; never call `ollamaClient` directly from UI.
-- Preserve NDJSON line-by-line parsing in `ollamaClient.ts` (buffer split, `lastIndex`, final-line flush). Don’t switch to fetch streams.
-- Network defaults: `127.0.0.1:11434`. Android emulator: `10.0.2.2`. Real device: use PC LAN IP and ensure Ollama bound to `0.0.0.0` and firewall allows 11434.
-- Settings changes must go through `saveSettings` so SecureStore stays in sync.
+**Native Client** (`src/lib/nativeClient.ts`)
 
-6. Where to look when changing things
+- Adapts two sources: native NativeModule (`OllamaNative` or `Ollama`) or JS fallback via `llama.rn`
+- Listens for events: `OllamaToken` (string), `OllamaDone` (void), `OllamaError` (string)
+- Phase 3: validates GGUF files, initializes context with safe defaults (n_ctx=512, cpu-only)
+- Implements common LLM stop tokens: `</s>`, `<|end|>`, `<|eot_id|>`, etc.
 
-- Provider switching: `src/lib/providerRouter.ts`
-- Streaming HTTP client: `src/lib/ollamaClient.ts`
-- Native wiring (stub): `src/lib/nativeClient.ts`
-- UI usage of provider and streaming: `src/screens/ChatScreen.tsx`
-- Settings, tests, and mode toggle: `src/screens/SettingsScreen.tsx`
+**Chat Flow** (`src/screens/ChatScreen.tsx`)
 
-7. Debugging quick tips
+1. Preflight `pingProvider()` to surface connection errors (emulator vs. device hints)
+2. Build message history including the new user prompt
+3. Call `streamProvider()` with `onToken` callback
+4. Append tokens to the last assistant message in state via `setMessages()`
 
-- Preflight connectivity in `ChatScreen` uses `pingProvider` to surface actionable errors (emulator vs device hints).
-- If tokens stop mid-stream, inspect `parseNew`, `buffer` handling, and the final flush on `readyState === 4`.
-- If Native mode fails, ensure dev client includes the module; otherwise expect the explicit “not available” error.
+### Developer Workflow
 
-Maintainer questions (for PR notes)
+```powershell
+pnpm install                    # Install deps (uses pnpm per package.json)
+pnpm start                      # Start Expo dev server
+pnpm start --android           # Start & open on Android emulator/device
+pnpm typecheck                 # Verify TypeScript (no build step)
+npx eas build --profile development --platform android  # Create dev client for native mode
+```
 
-- Should we add linting/tests now or wait for the Native phase? (placeholders exist in `package.json`)
-- If the streaming protocol changes, do you want an integration fixture of a recorded NDJSON stream in tests?
+### Key Integration Points
+
+**Ollama HTTP API** (remote mode)
+
+- `POST /api/chat` with `{ model, messages, stream: true }` → emits NDJSON lines
+- `GET /api/tags` or `/api/models` → model list (auto-fallback if first fails)
+- `GET /api/version` → used by `pingProvider()`
+
+**llama.rn (native mode, Phase 3)**
+
+- Exports `initLlama({ model, n_ctx, n_gpu_layers, use_mlock })` → context object
+- Context exposes `completion({ messages, n_predict, stop }, tokenCallback)` → Promise
+- Callback fires per token; returns final result on completion
+
+**Network Configuration**
+
+- Default: `127.0.0.1:11434`
+- Android emulator: `10.0.2.2:11434`
+- Real device: use PC's LAN IP; ensure Ollama bound to `0.0.0.0` (not `127.0.0.1`)
+
+### Project Patterns
+
+- **No fetch streams:** XMLHttpRequest + manual buffer parsing works in Expo Go; avoid fetch ReadableStream
+- **Atomic settings:** All partial updates go through `saveSettings({ partial })` to avoid sync issues
+- **Error messages provide hints:** emulator vs. device, native module availability, file access errors
+- **Callback-based streaming:** avoids Promise overhead on token arrival; enables cancellation via `streamHandle.cancel()`
+
+### File Map
+
+| File                              | Purpose                                                   |
+| --------------------------------- | --------------------------------------------------------- |
+| `App.tsx`                         | Tab navigation (Chat/Settings)                            |
+| `src/context/SettingsContext.tsx` | Centralized config state + persistence                    |
+| `src/lib/providerRouter.ts`       | Mode-based router; entry point for all provider calls     |
+| `src/lib/ollamaClient.ts`         | HTTP streaming client (XMLHttpRequest + NDJSON parsing)   |
+| `src/lib/nativeClient.ts`         | Native module adapter + llama.rn fallback (Phase 3)       |
+| `src/lib/nativeContracts.ts`      | Native module type contracts                              |
+| `src/screens/ChatScreen.tsx`      | Chat UI; preflight ping + stream handling                 |
+| `src/screens/SettingsScreen.tsx`  | Config inputs + mode toggle + native availability check   |
+| `native-bridge/android/`          | Kotlin skeletons for custom OllamaNative module (Phase 3) |
+
+### Debugging Tips
+
+- **Connectivity issues:** Check `pingProvider()` error message; emulator uses `10.0.2.2`, devices need LAN IP + firewall rule
+- **Tokens stop mid-stream:** Inspect `parseNew()` in `ollamaClient.ts`; verify `lastIndex` increments and final buffer flush on `readyState === 4`
+- **Native mode unavailable:** Expected if dev client not built; fall back to remote mode or build via EAS
+- **GGUF validation errors:** Check `loadLlamaModelInfo()` in Phase 3; ensure file exists and is valid GGUF format

@@ -1,118 +1,273 @@
-# Ollama Mobile (Option A — Phase 1)
+# Ollama Mobile — React Native Chat Client
 
-Expo-managed React Native prototype for offline/local LLM chat via Ollama over LAN or localhost.
+> **Chat with local LLMs on your phone over LAN or localhost**
 
-This app currently supports Option A — Phase 1 (Expo Go, JS-only) and scaffolding for Phase 2 (Dev Client/EAS with native module). Phase 1 connects to an Ollama HTTP API endpoint. Phase 2 adds a "Native" mode in Settings intended for a future Ollama native module.
+An Expo-managed React Native app for real-time chat with [Ollama](https://ollama.com) local language models. Built with **streaming tokens**, **flexible connection modes**, and a **phased architecture** from prototype to production.
 
-## Features (Phase 1 + Phase 2 scaffold)
+🚀 **Quick start:** Run Ollama on your PC, scan a QR code, and chat instantly—no internet required.
 
-- Remote HTTP mode: Connect to Ollama endpoint (default: http://127.0.0.1:11434)
-- Chat UI with incremental streaming of tokens using XMLHttpRequest to parse NDJSON
-- Settings: edit host, port, and model; quick test connectivity and fetch model list
-- Settings: select Connection Mode — Remote HTTP (Expo Go) or Native (requires dev client)
-- Android-first but works in Expo Go for rapid iteration
+## Features
 
-## Requirements
+- ⚡ **Streaming chat** with real-time token display
+- 🔌 **Dual connection modes:** Remote HTTP (Expo Go) + Native (on-device, Phase 3)
+- 🎯 **Model switching** with quick connectivity tests
+- 📱 **Android-first** with iOS support planned
+- 🛡️ **Fully local** — all data and models stay on device/LAN
+- 🔧 **Incremental builds:** Works in Expo Go; scales to native modules
 
-- Node.js LTS and npm
-- Android device with Expo Go installed, on the same LAN as your Ollama host (or use localhost if supported)
-- Ollama running on your desktop/laptop: https://ollama.com
+## System Architecture
 
-## Getting started
+```
+┌─────────────────────────────────────────┐
+│         React Native UI Layer            │
+│     (ChatScreen / SettingsScreen)        │
+└────────────────┬────────────────────────┘
+                 │
+         ┌───────▼────────┐
+         │ Provider Router │  ◄─── Single entry point
+         │  (mode-based)   │
+         └───┬────────┬────┘
+             │        │
+     ┌───────▼─┐  ┌──▼────────────┐
+     │   HTTP  │  │   Native      │
+     │ Client  │  │  Client       │
+     │ (XHR)   │  │ (llama.rn)    │
+     └───────┬─┘  └──┬────────────┘
+             │       │
+      ┌──────▼───────▼─────┐
+      │  Ollama HTTP API   │
+      │  or llama.cpp lib  │
+      └────────────────────┘
+```
 
-1. Install dependencies
+**Key principle:** All UI calls go through the provider router; never call clients directly. This enables mode switching without touching UI code.
+
+## Installation & Setup
+
+### Prerequisites
+
+- **Node.js** (LTS 18+) and **pnpm** (or npm/yarn)
+- **Ollama** running on your PC: https://ollama.com
+- **Android device** with Expo Go (or emulator with `10.0.2.2:11434` routing)
+
+### Step 1: Clone and install
 
 ```powershell
+git clone https://github.com/yourusername/ollama-mobile.git
+cd ollama-mobile
 pnpm install
 ```
 
-2. Start the Expo dev server
+### Step 2: Start Expo dev server
 
 ```powershell
 pnpm start
 ```
 
-3. Open on device
+### Step 3: Open on device
 
-- Install Expo Go on your Android device
-- Scan the QR code from the terminal or browser to open the app
-
-4. Configure endpoint / mode
-
-- Go to the Settings tab
-- Choose Connection Mode:
-  - Remote HTTP (default): set `Host` to your desktop/laptop IP (e.g., `192.168.1.10`) and `Port` to `11434`.
-  - Native: requires a custom dev client/EAS build that includes an Ollama native module (see below). If the module isn't present, tests will report unavailability.
-- Tap `Test` to confirm connectivity
-- Optionally tap `Fetch Models` to pick the first available model; otherwise set `Model` manually (e.g., `llama3`)
-
-5. Chat
-
-- Go to Chat tab, enter a message, and Send
-- Responses should stream token-by-token
-
-## Notes
-
-- Streaming is implemented via `XMLHttpRequest` progressive `responseText` parsing, which works in Expo Go without native modules.
-- Phase 2 (Native) uses a stub that looks for a native module named `OllamaNative` (or `Ollama`) exposing methods: `ping()`, `getModels()`, `startChat({ model, messages })`, `stopChat()`, and emits events `OllamaToken`, `OllamaDone`, `OllamaError`. If not present, the app continues to work in Remote HTTP mode.
-- If you see connection failures, ensure:
-  - Phone and PC are on the same Wi-Fi/LAN
-  - Firewall allows connections to port 11434
-  - Ollama is running (e.g., `ollama serve`) and reachable from your phone
-
-## Phase 2: Dev client / native module (Option A)
-
-- Build a custom dev client to add native capabilities:
+**Expo Go** (works in emulator or physical device on same LAN):
 
 ```powershell
-pnpm install
-# login/setup EAS if needed (optional)
-# npx eas build:configure
-npx eas build --profile development --platform android
+# Scan QR code from terminal/browser, or:
+pnpm start --android
 ```
 
-## Phase 3: Option B — llama.cpp native integration (Recommended)
-
-This option uses a React Native llama.cpp library for on-device inference and streams tokens via the existing Native provider.
-
-High-level steps:
-
-- Add a RN llama.cpp library (e.g., @mybigday/llama.rn or similar)
-- Build an Android dev client (EAS) to include native code
-- Provide a native bridge that exposes: `ping()`, `getModels()`, `startChat({ model, messages })`, `stopChat()` and emits `OllamaToken`, `OllamaDone`, `OllamaError`
-- Switch Settings → Connection Mode to Native and test streaming
-
-Example commands (Windows PowerShell) — see also `docs/phase3-optionb-llama-native.md`:
+**Dev Client** (for native mode):
 
 ```powershell
-# 1) Install deps
-pnpm install
-
-# 2) Add llama.cpp RN library (choose one)
-# pnpm add @mybigday/llama.rn
-# or
-# pnpm add react-native-llama
-
-# 3) Create a dev client that includes the native module
-npx eas build --profile development --platform android
-
-# 4) Run with the dev client
-pnpm run start:dev
+pnpm start:dev
 ```
 
-Notes:
+### Step 4: Configure in Settings tab
 
-- The app’s Native client expects the module name `OllamaNative` or `Ollama` with the methods/events shown above. If your chosen library uses a different module name or API, implement a thin native bridge that adapts to this contract.
-- In Native mode, the `Settings` screen shows a quick connectivity test. When the native module is available, it may also display the models directory (if your bridge implements `getModelsDir`).
-- If using the built-in `llama.rn` JS fallback (no custom NativeModule), set `Settings → Model` to a `file://` path of your GGUF model (e.g., `file:///storage/emulated/0/Android/data/<package>/files/models/tinyllama.Q4_0.gguf`).
+1. **Host & Port:**
 
-- Implement a native module that matches the stub contract above, then rebuild your dev client. Once present, switch Settings -> Connection Mode to Native.
+   - **PC/LAN:** `192.168.1.100` : `11434` (adjust IP to your PC)
+   - **Emulator:** `10.0.2.2` : `11434` (special Android emulator routing)
+   - **Local device:** `127.0.0.1` : `11434` (if Ollama running on device)
 
-## Next phases
+2. **Connection Mode:** Remote HTTP (default) or Native (requires dev client)
 
-- Device-native integration via Expo dev clients (for local runtime embedding)
-- On-device Ollama runtime (advanced) for supported hardware
+3. **Tap Test** to verify connectivity, then **Fetch Models** to list available models
+
+4. Go to **Chat** tab and send a message!
+
+## Usage
+
+### Remote HTTP Mode (Phase 1)
+
+Works in Expo Go. Your phone connects to Ollama on a PC/server.
+
+```powershell
+# Install and run Ollama on your PC
+ollama serve
+
+# On phone Settings, set Connection Mode to "Remote HTTP"
+# Enter your PC's LAN IP and port 11434
+```
+
+**Why XHR and not fetch?**  
+React Native in Expo Go doesn't support `fetch` ReadableStream. XMLHttpRequest with progressive response parsing works reliably in Go and continues in native builds.
+
+### Native Mode (Phase 3 — on-device inference)
+
+Run models **directly on your phone** with llama.cpp bindings. Requires building a dev client.
+
+**High-level flow:**
+
+1. Add a llama.cpp React Native library (e.g., `llama.rn`)
+2. Build an EAS dev client: `npx eas build --profile development --platform android`
+3. Select Connection Mode → Native in Settings
+4. Load a GGUF model and chat
+
+See [`docs/phase3-optionb-llama-native.md`](./docs/phase3-optionb-llama-native.md) for detailed integration steps.
+
+## Project Structure
+
+```
+.
+├── App.tsx                           # Tab navigator (Chat/Settings)
+├── src/
+│   ├── context/
+│   │   └── SettingsContext.tsx      # Global settings state + secure storage
+│   ├── lib/
+│   │   ├── providerRouter.ts        # Routes to HTTP or Native client
+│   │   ├── ollamaClient.ts          # XMLHttpRequest streaming (NDJSON parsing)
+│   │   ├── nativeClient.ts          # Native module adapter + llama.rn fallback
+│   │   └── nativeContracts.ts       # TypeScript contracts for native bridge
+│   └── screens/
+│       ├── ChatScreen.tsx            # Chat UI + message streaming
+│       └── SettingsScreen.tsx        # Config, mode toggle, connectivity test
+├── native-bridge/
+│   └── android/                      # Kotlin stubs for custom OllamaNative module
+├── plugins/
+│   └── with-ollama-native.ts        # Expo config plugin for native builds
+├── .github/
+│   └── copilot-instructions.md      # AI agent guidance (architecture + patterns)
+└── docs/
+    └── phase3-optionb-llama-native.md  # Phase 3 native integration guide
+```
+
+## Developer Workflow
+
+### Commands
+
+```powershell
+# Install dependencies (uses pnpm from package.json)
+pnpm install
+
+# Type-check (no build step, uses tsc directly)
+pnpm typecheck
+
+# Start Expo dev server
+pnpm start
+
+# Start on Android emulator/device
+pnpm start --android
+
+# Start dev client (for native mode development)
+pnpm start:dev
+
+# Build EAS preview (Android APK)
+npx eas build --platform android --profile preview
+```
+
+### Key Files for Common Tasks
+
+| Task                                        | File(s)                                                                |
+| ------------------------------------------- | ---------------------------------------------------------------------- |
+| **Add a new provider** (HTTP variant, etc.) | `src/lib/providerRouter.ts` → add router logic; create new client      |
+| **Modify chat streaming**                   | `src/lib/ollamaClient.ts` (HTTP) or `src/lib/nativeClient.ts` (native) |
+| **Change UI layout**                        | `src/screens/ChatScreen.tsx` or `SettingsScreen.tsx`                   |
+| **Add settings field**                      | `src/context/SettingsContext.tsx` + update persistence                 |
+| **Implement native module**                 | `native-bridge/android/` → then update `src/lib/nativeClient.ts`       |
+
+## Troubleshooting
+
+### "Cannot reach Ollama"
+
+- **Emulator:** Use `10.0.2.2:11434` (not `127.0.0.1`)
+- **Physical device:** Ensure phone and PC are on the **same Wi-Fi**
+- **Firewall:** Allow port `11434` on your PC
+- **Ollama:** Running? Try `ollama serve` in a terminal
+
+### Tokens stop mid-stream
+
+- Inspect `parseNew()` in `ollamaClient.ts` — verify `lastIndex` increments
+- Check `readyState === 4` final buffer flush
+- Ensure model isn't crashing; check Ollama logs
+
+### Native mode unavailable
+
+- You've selected "Native" but no dev client is installed
+- Build one: `npx eas build --profile development --platform android`
+- Or switch back to Remote HTTP mode in Settings
+
+### GGUF file validation error (Phase 3)
+
+- File may be corrupted or unsupported format
+- Verify: `file path/to/model.gguf` (should show GGUF magic number)
+- Try a known-good model (e.g., TinyLlama quantized)
+
+## Architecture Decisions
+
+### Why XMLHttpRequest over fetch?
+
+**Expo Go limitation:** `fetch` with ReadableStream doesn't work reliably in managed Expo. XMLHttpRequest with manual NDJSON parsing is battle-tested.
+
+### Why provider router?
+
+**Decoupling:** Screens never know if they're calling HTTP or native. Swapping modes is config-only, not code changes.
+
+### Why secure storage for settings?
+
+**Privacy:** Host/port + model name are persisted encrypted, not in cleartext AsyncStorage.
+
+### Why Phase 3 defaults (n_ctx=512, cpu-only)?
+
+**Stability:** Smaller context and CPU-only mode avoid OOM crashes on mid-range devices. Users can tune after validating basic chat.
+
+## Integration Points
+
+### Ollama HTTP API (Remote mode)
+
+- `POST /api/chat` — stream completions (NDJSON)
+- `GET /api/tags` (or `/api/models`) — list models
+- `GET /api/version` — health check
+
+### llama.rn (Native mode, Phase 3)
+
+```typescript
+const context = await initLlama({
+  model: 'file:///path/to/model.gguf',
+  n_ctx: 512,
+  n_gpu_layers: 0,
+});
+
+await context.completion(
+  { messages, n_predict: 256, stop: [...] },
+  (token) => console.log(token)  // Per-token callback
+);
+```
+
+See `src/lib/nativeClient.ts` for full adaptation pattern.
+
+## Roadmap
+
+| Phase      | Goal                                       | Status                                                 |
+| ---------- | ------------------------------------------ | ------------------------------------------------------ |
+| **1**      | Prototype in Expo Go, HTTP-only            | ✅ Complete                                            |
+| **2**      | Dev client scaffold, native stub           | ✅ In code                                             |
+| **3**      | llama.cpp on-device inference              | 🚧 In progress (`docs/phase3-optionb-llama-native.md`) |
+| **Future** | Model management UI, parameter tuning, iOS | 📋 Planned                                             |
+
+## Contributing
+
+Issues and PRs welcome! See [`CONTRIBUTING.md`](./CONTRIBUTING.md) (if present) or open an issue.
+
+For AI agents working on this codebase, see [`.github/copilot-instructions.md`](./.github/copilot-instructions.md) for architecture, patterns, and debugging tips.
 
 ## License
 
-This project is for demonstration/prototyping per PRD Phase 1.
+MIT License — see [`LICENSE`](./LICENSE) file (if present). Project is demonstration/prototyping per PRD Phase 1.
