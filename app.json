@@ -1,8 +1,8 @@
 {
   "expo": {
-  "name": "Ollama Mobile",
+    "name": "Ollama Mobile",
     "slug": "ollama-mobile",
-  "version": "0.1.1",
+    "version": "0.1.1",
     "orientation": "portrait",
     "plugins": [
       [
@@ -23,7 +23,7 @@
           "enableOpenCL": true
         }
       ],
-  "./plugins/with-ollama-native",
+      "./plugins/with-ollama-native",
       [
         "expo-secure-store",
         {
