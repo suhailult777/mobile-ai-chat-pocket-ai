@@ -187,17 +187,8 @@ export function streamNative(
       const context = await ensureContext(modelPath);
 
       // Common stop tokens from llama.cpp examples
-      const stopWords = [
-        "</s>",
-        "<|end|>",
-        "<|eot_id|>",
-        "<|end_of_text|>",
-        "<|im_end|>",
-        "<|EOT|>",
-        "<|END_OF_TURN_TOKEN|>",
-        "<|end_of_turn|>",
-        "<|endoftext|>",
-      ];
+      // Use a minimal, safer set of stop tokens to avoid premature endings on some models
+      const stopWords = ["</s>", "<|eot_id|>"];
 
       // Stream completion with partial token callback
       // Try to ensure parallel is enabled before using parallel.completion

@@ -32,17 +32,7 @@ export type StreamHandle = { cancel: () => void };
 
 export function streamChat(opts: StreamOptions): StreamHandle {
   const url = normalizeUrl(opts.baseUrl) + "/api/chat";
-  const defaultStop: string[] = [
-    "</s>",
-    "<|end|>",
-    "<|eot_id|>",
-    "<|end_of_text|>",
-    "<|im_end|>",
-    "<|EOT|>",
-    "<|END_OF_TURN_TOKEN|>",
-    "<|end_of_turn|>",
-    "<|endoftext|>",
-  ];
+  const defaultStop: string[] = ["</s>", "<|eot_id|>"];
   const defaultOptions = {
     num_predict: 256,
     num_ctx: 2048,
