@@ -40,7 +40,8 @@ let parallelEnabledForContext: WeakSet<any> = new WeakSet();
 
 async function ensureContext(modelPath: string) {
   if (cachedContext && cachedModelPath === modelPath) return cachedContext;
-  if (contextInitPromise && cachedModelPath === modelPath) return contextInitPromise;
+  if (contextInitPromise && cachedModelPath === modelPath)
+    return contextInitPromise;
 
   contextInitPromise = (async () => {
     const lrn = await getLlamaRn();
@@ -61,7 +62,9 @@ async function ensureContext(modelPath: string) {
         );
       }
     } catch (fileErr: any) {
-      throw new Error(`Cannot access model file: ${fileErr?.message || fileErr}`);
+      throw new Error(
+        `Cannot access model file: ${fileErr?.message || fileErr}`
+      );
     }
 
     // Validate GGUF format if available
@@ -77,6 +80,7 @@ async function ensureContext(modelPath: string) {
         model: modelPath,
         n_ctx: 512,
         n_gpu_layers: 99, // offload as many layers as possible
+        n_parallel: 2,
         use_mlock: false,
       });
       // If the result indicates no GPU, we will still keep the context (CPU)
@@ -87,6 +91,7 @@ async function ensureContext(modelPath: string) {
         model: modelPath,
         n_ctx: 512,
         n_gpu_layers: 0,
+        n_parallel: 2,
         use_mlock: false,
       });
     }
@@ -102,10 +107,12 @@ async function ensureContext(modelPath: string) {
     // Enable parallel mode once to allow cancellable requests
     try {
       if (!parallelEnabledForContext.has(ctx) && ctx?.parallel?.enable) {
-        await ctx.parallel.enable({ n_parallel: 2, n_batch: 256 });
-        parallelEnabledForContext.add(ctx);
+        const ok = await ctx.parallel.enable({ n_parallel: 2, n_batch: 256 });
+        if (ok) parallelEnabledForContext.add(ctx);
       }
-    } catch {}
+    } catch (e) {
+      // Parallel not available or failed to enable; fall back to single completion later
+    }
     return ctx;
   })();
 
@@ -161,6 +168,7 @@ export function streamNative(
   let canceled = false;
   let stopped = false;
   let active = true;
+  let stopHandleRef: null | (() => Promise<void> | void) = null;
 
   // Track emitted text for this stream so we don't emit duplicated final text
   // (some backends return an accumulated `result.text` in addition to per-token
@@ -192,14 +200,34 @@ export function streamNative(
       ];
 
       // Stream completion with partial token callback
-      // Use parallel API to get a cancellable handle if available
-      let stopHandle: null | (() => Promise<void> | void) = null;
+      // Try to ensure parallel is enabled before using parallel.completion
       let result: any = null;
-      if (context?.parallel?.completion) {
+      let canUseParallel = false;
+      try {
+        if (
+          context?.parallel?.enable &&
+          !parallelEnabledForContext.has(context)
+        ) {
+          const ok = await context.parallel.enable({
+            n_parallel: 2,
+            n_batch: 256,
+          });
+          if (ok) parallelEnabledForContext.add(context);
+        }
+        canUseParallel = !!(
+          context?.parallel?.completion &&
+          parallelEnabledForContext.has(context)
+        );
+      } catch {
+        canUseParallel = false;
+      }
+
+      if (canUseParallel) {
         const { requestId, promise, stop } = await context.parallel.completion(
           {
             messages: opts.messages,
             n_predict: 256,
+            n_batch: 256,
             stop: stopWords,
           },
           (_requestId: any, data: any) => {
@@ -211,7 +239,7 @@ export function streamNative(
             }
           }
         );
-        stopHandle = stop;
+        stopHandleRef = stop;
         result = await promise;
       } else {
         // Fallback to single completion without true cancel
@@ -219,6 +247,7 @@ export function streamNative(
           {
             messages: opts.messages,
             n_predict: 256,
+            n_batch: 256,
             stop: stopWords,
           },
           (data: any) => {
@@ -264,9 +293,7 @@ export function streamNative(
       active = false;
       try {
         // Try to stop the parallel request if present
-        // Note: stopHandle captured in closure above via mutable binding
-        // @ts-ignore
-        if (typeof stopHandle === "function") stopHandle();
+        if (typeof stopHandleRef === "function") stopHandleRef();
       } catch {}
     },
   };
@@ -279,8 +306,8 @@ export async function prewarmNative(modelPath: string): Promise<boolean> {
     const ctx = await ensureContext(modelPath);
     try {
       if (!parallelEnabledForContext.has(ctx) && ctx?.parallel?.enable) {
-        await ctx.parallel.enable({ n_parallel: 2, n_batch: 256 });
-        parallelEnabledForContext.add(ctx);
+        const ok = await ctx.parallel.enable({ n_parallel: 2, n_batch: 256 });
+        if (ok) parallelEnabledForContext.add(ctx);
       }
     } catch {}
     return true;

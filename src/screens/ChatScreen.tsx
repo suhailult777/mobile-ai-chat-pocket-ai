@@ -1,4 +1,4 @@
-import React, { useContext, useMemo, useRef, useState } from "react";
+import React, { useCallback, useContext, useMemo, useRef, useState } from "react";
 import {
   View,
   Text,
@@ -17,6 +17,22 @@ import {
   pingProvider,
   getModelsProvider,
 } from "../lib/providerRouter";
+
+type BubbleProps = { role: ChatMessage["role"]; content: string; isStreaming: boolean };
+const MessageBubble = React.memo(function MessageBubble({ role, content, isStreaming }: BubbleProps) {
+  return (
+    <View
+      style={[
+        styles.bubble,
+        role === "user" ? styles.user : styles.assistant,
+      ]}
+    >
+      <Text style={styles.bubbleText}>
+        {content || (role === "assistant" && isStreaming ? "…" : "")}
+      </Text>
+    </View>
+  );
+});
 
 export default function ChatScreen() {
   const { settings, saveSettings } = useContext(SettingsContext);
@@ -37,6 +53,19 @@ export default function ChatScreen() {
   // Buffer incoming tokens and flush at ~30–60Hz to reduce re-renders
   const tokenBufferRef = useRef<string>("");
   const flushTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const flushTickRef = useRef<number>(0);
+  const nearBottomRef = useRef<boolean>(true);
+
+  const onScroll = useCallback((e: any) => {
+    try {
+      const { contentSize, layoutMeasurement, contentOffset } = e.nativeEvent || {};
+      const contentH = contentSize?.height ?? 0;
+      const viewH = layoutMeasurement?.height ?? 0;
+      const offsetY = contentOffset?.y ?? 0;
+      // Consider near-bottom within 80px of the end
+      nearBottomRef.current = contentH - (offsetY + viewH) < 80;
+    } catch {}
+  }, []);
 
   const startFlushLoop = () => {
     if (flushTimerRef.current) return;
@@ -55,7 +84,11 @@ export default function ChatScreen() {
         }
         return next;
       });
-      scrollRef.current?.scrollToEnd({ animated: true });
+      // Debounce auto-scroll and only when user is near bottom
+      flushTickRef.current = (flushTickRef.current + 1) % 3; // scroll every 3 flushes
+      if (nearBottomRef.current && flushTickRef.current === 0) {
+        scrollRef.current?.scrollToEnd({ animated: true });
+      }
     }, 33); // ~30 FPS
   };
 
@@ -105,12 +138,12 @@ export default function ChatScreen() {
     return out.reverse();
   };
 
-  const send = async () => {
+  const send = useCallback(async () => {
     if (!input.trim() || isStreaming) return;
     setError(null);
 
-  const userMsg: ChatMessage = { role: "user", content: input.trim() };
-  const history = buildTruncatedHistory(messages, userMsg);
+    const userMsg: ChatMessage = { role: "user", content: input.trim() };
+    const history = buildTruncatedHistory(messages, userMsg);
     const assistantMsg: ChatMessage = { role: "assistant", content: "" };
 
     // Update messages with both user and assistant seed in one batch
@@ -131,9 +164,9 @@ export default function ChatScreen() {
       return;
     }
 
-  setIsStreaming(true);
-  tokenBufferRef.current = "";
-  startFlushLoop();
+    setIsStreaming(true);
+    tokenBufferRef.current = "";
+    startFlushLoop();
 
     const handle = streamProvider({
       mode: settings.mode,
@@ -155,15 +188,15 @@ export default function ChatScreen() {
     });
 
     streamRef.current = handle;
-  };
+  }, [input, isStreaming, settings.mode, baseUrl, settings.model, messages]);
 
-  const stop = () => {
+  const stop = useCallback(() => {
     streamRef.current?.cancel();
     setIsStreaming(false);
     stopFlushLoop();
-  };
+  }, []);
 
-  const toggleModels = async () => {
+  const toggleModels = useCallback(async () => {
     if (!showModels && models.length === 0) {
       try {
         const list = await getModelsProvider({ mode: settings.mode, baseUrl });
@@ -173,12 +206,12 @@ export default function ChatScreen() {
       }
     }
     setShowModels((v) => !v);
-  };
+  }, [showModels, models.length, settings.mode, baseUrl]);
 
-  const chooseModel = async (m: string) => {
+  const chooseModel = useCallback(async (m: string) => {
     await saveSettings({ model: m });
     setShowModels(false);
-  };
+  }, [saveSettings]);
 
   return (
     <KeyboardAvoidingView
@@ -190,19 +223,11 @@ export default function ChatScreen() {
         ref={scrollRef}
         contentContainerStyle={styles.messages}
         keyboardShouldPersistTaps="handled"
+        onScroll={onScroll}
+        scrollEventThrottle={16}
       >
         {messages.map((m, i) => (
-          <View
-            key={i}
-            style={[
-              styles.bubble,
-              m.role === "user" ? styles.user : styles.assistant,
-            ]}
-          >
-            <Text style={styles.bubbleText}>
-              {m.content || (m.role === "assistant" && isStreaming ? "…" : "")}
-            </Text>
-          </View>
+          <MessageBubble key={i} role={m.role} content={m.content} isStreaming={isStreaming} />
         ))}
       </ScrollView>
 
