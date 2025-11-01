@@ -1,4 +1,10 @@
-import React, { useCallback, useContext, useMemo, useRef, useState } from "react";
+import React, {
+  useCallback,
+  useContext,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import {
   View,
   Text,
@@ -18,14 +24,19 @@ import {
   getModelsProvider,
 } from "../lib/providerRouter";
 
-type BubbleProps = { role: ChatMessage["role"]; content: string; isStreaming: boolean };
-const MessageBubble = React.memo(function MessageBubble({ role, content, isStreaming }: BubbleProps) {
+type BubbleProps = {
+  role: ChatMessage["role"];
+  content: string;
+  isStreaming: boolean;
+};
+const MessageBubble = React.memo(function MessageBubble({
+  role,
+  content,
+  isStreaming,
+}: BubbleProps) {
   return (
     <View
-      style={[
-        styles.bubble,
-        role === "user" ? styles.user : styles.assistant,
-      ]}
+      style={[styles.bubble, role === "user" ? styles.user : styles.assistant]}
     >
       <Text style={styles.bubbleText}>
         {content || (role === "assistant" && isStreaming ? "…" : "")}
@@ -58,7 +69,8 @@ export default function ChatScreen() {
 
   const onScroll = useCallback((e: any) => {
     try {
-      const { contentSize, layoutMeasurement, contentOffset } = e.nativeEvent || {};
+      const { contentSize, layoutMeasurement, contentOffset } =
+        e.nativeEvent || {};
       const contentH = contentSize?.height ?? 0;
       const viewH = layoutMeasurement?.height ?? 0;
       const offsetY = contentOffset?.y ?? 0;
@@ -208,10 +220,13 @@ export default function ChatScreen() {
     setShowModels((v) => !v);
   }, [showModels, models.length, settings.mode, baseUrl]);
 
-  const chooseModel = useCallback(async (m: string) => {
-    await saveSettings({ model: m });
-    setShowModels(false);
-  }, [saveSettings]);
+  const chooseModel = useCallback(
+    async (m: string) => {
+      await saveSettings({ model: m });
+      setShowModels(false);
+    },
+    [saveSettings]
+  );
 
   return (
     <KeyboardAvoidingView
@@ -227,7 +242,12 @@ export default function ChatScreen() {
         scrollEventThrottle={16}
       >
         {messages.map((m, i) => (
-          <MessageBubble key={i} role={m.role} content={m.content} isStreaming={isStreaming} />
+          <MessageBubble
+            key={i}
+            role={m.role}
+            content={m.content}
+            isStreaming={isStreaming}
+          />
         ))}
       </ScrollView>
 
