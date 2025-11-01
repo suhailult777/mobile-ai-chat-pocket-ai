@@ -6,6 +6,9 @@ import {
   TouchableOpacity,
   StyleSheet,
   ScrollView,
+  KeyboardAvoidingView,
+  Platform,
+  Keyboard,
 } from "react-native";
 import { SettingsContext } from "../context/SettingsContext";
 import type { ChatMessage } from "../lib/ollamaClient";
@@ -38,14 +41,14 @@ export default function ChatScreen() {
 
     const userMsg: ChatMessage = { role: "user", content: input.trim() };
     const history = [...messages, userMsg];
-    setMessages(history);
+    const assistantMsg: ChatMessage = { role: "assistant", content: "" };
+
+    // Update messages with both user and assistant seed in one batch
+    setMessages([...history, assistantMsg]);
     setInput("");
 
-    // Seed an assistant message we will stream into
-    setMessages((prev: ChatMessage[]) => [
-      ...prev,
-      { role: "assistant", content: "" },
-    ]);
+    // Dismiss keyboard after sending
+    Keyboard.dismiss();
 
     // Preflight connectivity check to provide actionable errors
     const ok = await pingProvider({ mode: settings.mode, baseUrl });
@@ -112,8 +115,16 @@ export default function ChatScreen() {
   };
 
   return (
-    <View style={styles.container}>
-      <ScrollView ref={scrollRef} contentContainerStyle={styles.messages}>
+    <KeyboardAvoidingView
+      style={styles.container}
+      behavior={Platform.OS === "ios" ? "padding" : "height"}
+      keyboardVerticalOffset={100}
+    >
+      <ScrollView
+        ref={scrollRef}
+        contentContainerStyle={styles.messages}
+        keyboardShouldPersistTaps="handled"
+      >
         {messages.map((m, i) => (
           <View
             key={i}
@@ -138,6 +149,11 @@ export default function ChatScreen() {
           onChangeText={setInput}
           placeholder={`Message (${settings.model})`}
           editable={!isStreaming}
+          multiline
+          maxLength={1000}
+          returnKeyType="send"
+          onSubmitEditing={send}
+          blurOnSubmit={false}
         />
         {isStreaming ? (
           <TouchableOpacity onPress={stop} style={[styles.button, styles.stop]}>
@@ -217,7 +233,7 @@ export default function ChatScreen() {
           </ScrollView>
         </View>
       )}
-    </View>
+    </KeyboardAvoidingView>
   );
 }
 
@@ -248,6 +264,8 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 8,
     marginRight: 8,
+    maxHeight: 100,
+    minHeight: 40,
   },
   button: {
     backgroundColor: "#007AFF",

@@ -76,6 +76,12 @@ export function streamNative(
   let stopped = false;
   let active = true;
 
+  // Track emitted text for this stream so we don't emit duplicated final text
+  // (some backends return an accumulated `result.text` in addition to per-token
+  // callbacks). We append tokens as they arrive and only emit the remaining
+  // suffix from `result.text` after completion.
+  let emittedText = "";
+
   (async () => {
     try {
       const lrn = await getLlamaRn();
@@ -175,15 +181,30 @@ export function streamNative(
         (data: any) => {
           if (!active || canceled) return;
           const t = data?.token ?? data?.content ?? "";
-          if (t) opts.onToken(t);
+          if (t) {
+            // append to local emitted buffer and forward token
+            emittedText += t;
+            opts.onToken(t);
+          }
         }
       );
 
       if (!active) return;
       if (!canceled && !stopped) {
-        // Emit any remaining text (some bindings provide accumulated text)
-        const tail = (result as any)?.text;
-        if (tail) opts.onToken(tail);
+        // Some bindings return an accumulated text in result.text. Only emit
+        // the suffix that hasn't already been emitted via per-token callbacks.
+        const tail = (result as any)?.text ?? "";
+        if (tail) {
+          if (!tail.startsWith(emittedText)) {
+            // If the returned text is not a simple extension, emit the full
+            // text but avoid duplicating an exact prefix we've already sent.
+            const remaining = tail.slice(emittedText.length);
+            if (remaining) opts.onToken(remaining);
+          } else {
+            const remaining = tail.slice(emittedText.length);
+            if (remaining) opts.onToken(remaining);
+          }
+        }
         opts.onDone && opts.onDone();
       }
     } catch (e: any) {
