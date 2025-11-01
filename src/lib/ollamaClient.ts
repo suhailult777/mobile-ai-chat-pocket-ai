@@ -13,16 +13,54 @@ export type StreamOptions = {
   onToken: (text: string) => void; // incremental token text
   onError?: (err: any) => void;
   onDone?: () => void;
+  // Optional advanced controls for Ollama
+  keepAlive?: string | number; // e.g. "1h", 300 (seconds), or -1 to keep indefinitely
+  options?: Partial<{
+    num_predict: number;
+    num_ctx: number;
+    num_thread: number;
+    temperature: number;
+    top_p: number;
+    top_k: number;
+    repeat_last_n: number;
+    repeat_penalty: number;
+  }>;
+  stop?: string[];
 };
 
 export type StreamHandle = { cancel: () => void };
 
 export function streamChat(opts: StreamOptions): StreamHandle {
   const url = normalizeUrl(opts.baseUrl) + "/api/chat";
+  const defaultStop: string[] = [
+    "</s>",
+    "<|end|>",
+    "<|eot_id|>",
+    "<|end_of_text|>",
+    "<|im_end|>",
+    "<|EOT|>",
+    "<|END_OF_TURN_TOKEN|>",
+    "<|end_of_turn|>",
+    "<|endoftext|>",
+  ];
+  const defaultOptions = {
+    num_predict: 256,
+    num_ctx: 2048,
+    // Let server auto-detect threads where supported (0)
+    num_thread: 0,
+    temperature: 0.7,
+    top_p: 0.9,
+    top_k: 40,
+    repeat_last_n: 64,
+    repeat_penalty: 1.1,
+  };
   const body = JSON.stringify({
     model: opts.model,
     messages: opts.messages,
     stream: true,
+    keep_alive: opts.keepAlive ?? "1h",
+    options: { ...defaultOptions, ...(opts.options || {}) },
+    stop: opts.stop && opts.stop.length ? opts.stop : defaultStop,
   });
 
   const xhr = new XMLHttpRequest();

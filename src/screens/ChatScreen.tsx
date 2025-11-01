@@ -34,13 +34,83 @@ export default function ChatScreen() {
 
   const scrollRef = useRef<ScrollView>(null);
   const streamRef = useRef<{ cancel: () => void } | null>(null);
+  // Buffer incoming tokens and flush at ~30–60Hz to reduce re-renders
+  const tokenBufferRef = useRef<string>("");
+  const flushTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const startFlushLoop = () => {
+    if (flushTimerRef.current) return;
+    flushTimerRef.current = setInterval(() => {
+      const buf = tokenBufferRef.current;
+      if (!buf) return;
+      tokenBufferRef.current = "";
+      setMessages((prev: ChatMessage[]) => {
+        const next = [...prev];
+        const lastIdx = next.length - 1;
+        if (lastIdx >= 0 && next[lastIdx].role === "assistant") {
+          next[lastIdx] = {
+            ...next[lastIdx],
+            content: next[lastIdx].content + buf,
+          };
+        }
+        return next;
+      });
+      scrollRef.current?.scrollToEnd({ animated: true });
+    }, 33); // ~30 FPS
+  };
+
+  const stopFlushLoop = () => {
+    if (flushTimerRef.current) {
+      clearInterval(flushTimerRef.current);
+      flushTimerRef.current = null;
+    }
+    // Flush any remaining tokens one last time
+    const remaining = tokenBufferRef.current;
+    if (remaining) {
+      tokenBufferRef.current = "";
+      setMessages((prev: ChatMessage[]) => {
+        const next = [...prev];
+        const lastIdx = next.length - 1;
+        if (lastIdx >= 0 && next[lastIdx].role === "assistant") {
+          next[lastIdx] = {
+            ...next[lastIdx],
+            content: next[lastIdx].content + remaining,
+          };
+        }
+        return next;
+      });
+    }
+  };
+
+  // Truncate history to reduce prompt size and speed up server-side processing
+  const buildTruncatedHistory = (
+    existing: ChatMessage[],
+    newUserMsg: ChatMessage,
+    budgetChars = 4000
+  ): ChatMessage[] => {
+    const withNew = [...existing, newUserMsg];
+    // Always keep the latest message and at least one assistant reply if present
+    let total = 0;
+    const out: ChatMessage[] = [];
+    for (let i = withNew.length - 1; i >= 0; i--) {
+      const m = withNew[i];
+      const len = (m.content || "").length + 16; // include role/overhead
+      if (out.length === 0 || total + len <= budgetChars) {
+        out.push(m);
+        total += len;
+      } else {
+        break;
+      }
+    }
+    return out.reverse();
+  };
 
   const send = async () => {
     if (!input.trim() || isStreaming) return;
     setError(null);
 
-    const userMsg: ChatMessage = { role: "user", content: input.trim() };
-    const history = [...messages, userMsg];
+  const userMsg: ChatMessage = { role: "user", content: input.trim() };
+  const history = buildTruncatedHistory(messages, userMsg);
     const assistantMsg: ChatMessage = { role: "assistant", content: "" };
 
     // Update messages with both user and assistant seed in one batch
@@ -61,7 +131,9 @@ export default function ChatScreen() {
       return;
     }
 
-    setIsStreaming(true);
+  setIsStreaming(true);
+  tokenBufferRef.current = "";
+  startFlushLoop();
 
     const handle = streamProvider({
       mode: settings.mode,
@@ -69,24 +141,17 @@ export default function ChatScreen() {
       model: settings.model,
       messages: history,
       onToken: (t) => {
-        setMessages((prev: ChatMessage[]) => {
-          const next = [...prev];
-          const lastIdx = next.length - 1;
-          if (lastIdx >= 0 && next[lastIdx].role === "assistant") {
-            next[lastIdx] = {
-              ...next[lastIdx],
-              content: next[lastIdx].content + t,
-            };
-          }
-          return next;
-        });
-        scrollRef.current?.scrollToEnd({ animated: true });
+        tokenBufferRef.current += t;
       },
       onError: (e) => {
         setError(String(e?.message || e));
         setIsStreaming(false);
+        stopFlushLoop();
       },
-      onDone: () => setIsStreaming(false),
+      onDone: () => {
+        setIsStreaming(false);
+        stopFlushLoop();
+      },
     });
 
     streamRef.current = handle;
@@ -95,6 +160,7 @@ export default function ChatScreen() {
   const stop = () => {
     streamRef.current?.cancel();
     setIsStreaming(false);
+    stopFlushLoop();
   };
 
   const toggleModels = async () => {

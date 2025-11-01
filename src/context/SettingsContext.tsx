@@ -57,6 +57,7 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
           await SecureStore.setItemAsync("model", next.model);
         if (partial.mode !== undefined)
           await SecureStore.setItemAsync("mode", next.mode);
+        // No advanced native settings persisted; use smart defaults automatically
       } catch (e) {
         console.warn("Failed to save settings", e);
       }

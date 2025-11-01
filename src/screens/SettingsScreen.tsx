@@ -9,7 +9,11 @@ import {
 } from "react-native";
 import { SettingsContext } from "../context/SettingsContext";
 import { getModelsProvider, pingProvider } from "../lib/providerRouter";
-import { getModelsDirNative, isNativeAvailable } from "../lib/nativeClient";
+import {
+  getModelsDirNative,
+  isNativeAvailable,
+  prewarmNative,
+} from "../lib/nativeClient";
 import { File, Directory, Paths } from "expo-file-system";
 import * as DocumentPicker from "expo-document-picker";
 
@@ -30,6 +34,11 @@ export default function SettingsScreen() {
   const onSave = async () => {
     await saveSettings({ host, port, model, mode });
     setStatus("Saved");
+    // Prewarm native model automatically to reduce cold starts
+    if (mode === "native" && model.startsWith("file://")) {
+      const warmed = await prewarmNative(model);
+      if (warmed) setStatus("Saved • Native model prewarmed");
+    }
     setTimeout(() => setStatus(""), 1500);
   };
 
@@ -52,6 +61,11 @@ export default function SettingsScreen() {
       const dir = await getModelsDirNative();
       if (dir) info += ` Models dir: ${dir}`;
       setNativeInfo(info);
+      // Prewarm model if path looks valid
+      if (model.startsWith("file://")) {
+        const warmed = await prewarmNative(model);
+        if (warmed) setStatus("Connection OK • Native model prewarmed");
+      }
     } else {
       setNativeInfo("");
     }
@@ -224,6 +238,10 @@ export default function SettingsScreen() {
                       // Persist selection to use the just-imported model immediately
                       setModel(destinationFile.uri);
                       await saveSettings({ model: destinationFile.uri });
+                      // Prewarm newly imported model
+                      if (mode === "native") {
+                        await prewarmNative(destinationFile.uri);
+                      }
                       setStatus(
                         `Imported and selected: ${file.name} (${(
                           (destinationFile.size || 0) /
@@ -272,6 +290,9 @@ export default function SettingsScreen() {
                         onPress={async () => {
                           setModel(p);
                           await saveSettings({ model: p });
+                          if (mode === "native") {
+                            await prewarmNative(p);
+                          }
                           setStatus(`Selected model: ${p}`);
                         }}
                         style={styles.fileItem}

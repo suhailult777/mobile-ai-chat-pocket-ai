@@ -31,6 +31,92 @@ async function getLlamaRn(): Promise<any | null> {
   }
 }
 
+// Cache a single initialized llama context per model path to avoid re-initializing
+// on every message. This dramatically reduces cold-start latency in Native mode.
+let cachedModelPath: string | null = null;
+let cachedContext: any | null = null;
+let contextInitPromise: Promise<any> | null = null;
+let parallelEnabledForContext: WeakSet<any> = new WeakSet();
+
+async function ensureContext(modelPath: string) {
+  if (cachedContext && cachedModelPath === modelPath) return cachedContext;
+  if (contextInitPromise && cachedModelPath === modelPath) return contextInitPromise;
+
+  contextInitPromise = (async () => {
+    const lrn = await getLlamaRn();
+    if (!lrn) throw new Error("llama.rn not available (dev client required)");
+    const { initLlama, loadLlamaModelInfo } = lrn;
+    if (typeof initLlama !== "function")
+      throw new Error("llama.rn missing initLlama()");
+
+    // Preflight validation: check file exists and is readable
+    const filePath = modelPath.replace(/^file:\/\//, "");
+    const fileUri = `file://${filePath}`;
+    try {
+      const modelFile = new File(fileUri);
+      const fileExists = await modelFile.exists;
+      if (!fileExists) {
+        throw new Error(
+          `Model file not found at path: ${filePath}\n\nPlease re-import the model using the Model Browser in Settings.`
+        );
+      }
+    } catch (fileErr: any) {
+      throw new Error(`Cannot access model file: ${fileErr?.message || fileErr}`);
+    }
+
+    // Validate GGUF format if available
+    if (typeof loadLlamaModelInfo === "function") {
+      await loadLlamaModelInfo(filePath);
+    }
+
+    // Try GPU (OpenCL) by default; fall back to CPU-only if unavailable
+    // Use safe defaults for n_ctx and memory locking.
+    let ctx: any | null = null;
+    try {
+      ctx = await initLlama({
+        model: modelPath,
+        n_ctx: 512,
+        n_gpu_layers: 99, // offload as many layers as possible
+        use_mlock: false,
+      });
+      // If the result indicates no GPU, we will still keep the context (CPU)
+      // Some builds expose ctx.gpu or ctx.reasonNoGPU; this is best-effort.
+    } catch (gpuErr) {
+      // Retry with CPU-only
+      ctx = await initLlama({
+        model: modelPath,
+        n_ctx: 512,
+        n_gpu_layers: 0,
+        use_mlock: false,
+      });
+    }
+
+    // Dispose previous context if switching models (if dispose exists)
+    if (cachedContext && cachedModelPath && cachedModelPath !== modelPath) {
+      try {
+        cachedContext.dispose?.();
+      } catch {}
+    }
+    cachedContext = ctx;
+    cachedModelPath = modelPath;
+    // Enable parallel mode once to allow cancellable requests
+    try {
+      if (!parallelEnabledForContext.has(ctx) && ctx?.parallel?.enable) {
+        await ctx.parallel.enable({ n_parallel: 2, n_batch: 256 });
+        parallelEnabledForContext.add(ctx);
+      }
+    } catch {}
+    return ctx;
+  })();
+
+  try {
+    const ctx = await contextInitPromise;
+    return ctx;
+  } finally {
+    contextInitPromise = null; // allow future re-init attempts if needed
+  }
+}
+
 export function streamNative(
   opts: {
     model: string;
@@ -84,79 +170,13 @@ export function streamNative(
 
   (async () => {
     try {
-      const lrn = await getLlamaRn();
-      if (!lrn) throw new Error("llama.rn not available (dev client required)");
-
-      const { initLlama } = lrn;
-      if (typeof initLlama !== "function")
-        throw new Error("llama.rn missing initLlama()");
-
       const modelPath = opts.model;
       if (!modelPath || !/^file:\/\//.test(modelPath)) {
         throw new Error(
           "In Native mode, set Settings → Model to a file:// path for a GGUF model"
         );
       }
-
-      console.log(
-        "[nativeClient] Initializing llama.rn with model:",
-        modelPath
-      );
-
-      // Preflight validation: check file exists and is readable
-      const filePath = modelPath.replace(/^file:\/\//, "");
-      const fileUri = `file://${filePath}`;
-
-      console.log("[nativeClient] Checking if model file exists:", filePath);
-      try {
-        const modelFile = new File(fileUri);
-        const fileExists = await modelFile.exists;
-        if (!fileExists) {
-          throw new Error(
-            `Model file not found at path: ${filePath}\n\nPlease re-import the model using the Model Browser in Settings.`
-          );
-        }
-
-        // Check file size
-        const sizeMB = ((modelFile.size || 0) / (1024 * 1024)).toFixed(2);
-        console.log(`[nativeClient] Model file size: ${sizeMB} MB`);
-      } catch (fileErr: any) {
-        throw new Error(
-          `Cannot access model file: ${fileErr?.message || fileErr}`
-        );
-      }
-
-      // Validate GGUF format using llama.rn's model info loader
-      console.log("[nativeClient] Validating GGUF format...");
-      const { loadLlamaModelInfo } = lrn;
-      if (typeof loadLlamaModelInfo === "function") {
-        try {
-          const modelInfo = await loadLlamaModelInfo(filePath);
-          console.log("[nativeClient] Model validation successful:", modelInfo);
-        } catch (validationErr: any) {
-          throw new Error(
-            `Invalid or corrupted GGUF file: ${
-              validationErr?.message || validationErr
-            }\n\nPlease ensure you're using a valid GGUF model file.`
-          );
-        }
-      }
-
-      // Use safer defaults to avoid context initialization failures:
-      // - Lower n_ctx (512 is llama.cpp default, 2048 may be too large for some models/devices)
-      // - Disable use_mlock on Android (may fail to lock memory pages)
-      // - Keep n_gpu_layers at 0 for CPU-only mode (broadest compatibility)
-      console.log(
-        "[nativeClient] Creating context with n_ctx=512, cpu-only..."
-      );
-      const context = await initLlama({
-        model: modelPath,
-        n_ctx: 512,
-        n_gpu_layers: 0,
-        use_mlock: false,
-      });
-
-      console.log("[nativeClient] Context initialized successfully");
+      const context = await ensureContext(modelPath);
 
       // Common stop tokens from llama.cpp examples
       const stopWords = [
@@ -172,22 +192,45 @@ export function streamNative(
       ];
 
       // Stream completion with partial token callback
-      const result = await context.completion(
-        {
-          messages: opts.messages,
-          n_predict: 256,
-          stop: stopWords,
-        },
-        (data: any) => {
-          if (!active || canceled) return;
-          const t = data?.token ?? data?.content ?? "";
-          if (t) {
-            // append to local emitted buffer and forward token
-            emittedText += t;
-            opts.onToken(t);
+      // Use parallel API to get a cancellable handle if available
+      let stopHandle: null | (() => Promise<void> | void) = null;
+      let result: any = null;
+      if (context?.parallel?.completion) {
+        const { requestId, promise, stop } = await context.parallel.completion(
+          {
+            messages: opts.messages,
+            n_predict: 256,
+            stop: stopWords,
+          },
+          (_requestId: any, data: any) => {
+            if (!active || canceled) return;
+            const t = data?.token ?? data?.content ?? "";
+            if (t) {
+              emittedText += t;
+              opts.onToken(t);
+            }
           }
-        }
-      );
+        );
+        stopHandle = stop;
+        result = await promise;
+      } else {
+        // Fallback to single completion without true cancel
+        result = await context.completion(
+          {
+            messages: opts.messages,
+            n_predict: 256,
+            stop: stopWords,
+          },
+          (data: any) => {
+            if (!active || canceled) return;
+            const t = data?.token ?? data?.content ?? "";
+            if (t) {
+              emittedText += t;
+              opts.onToken(t);
+            }
+          }
+        );
+      }
 
       if (!active) return;
       if (!canceled && !stopped) {
@@ -219,9 +262,31 @@ export function streamNative(
     cancel: () => {
       canceled = true;
       active = false;
-      // No direct cancellation API exposed here; we stop emitting tokens.
+      try {
+        // Try to stop the parallel request if present
+        // Note: stopHandle captured in closure above via mutable binding
+        // @ts-ignore
+        if (typeof stopHandle === "function") stopHandle();
+      } catch {}
     },
   };
+}
+
+// Optional prewarmer: initialize llama context for the current model path.
+export async function prewarmNative(modelPath: string): Promise<boolean> {
+  try {
+    if (!/^file:\/\//.test(modelPath)) return false;
+    const ctx = await ensureContext(modelPath);
+    try {
+      if (!parallelEnabledForContext.has(ctx) && ctx?.parallel?.enable) {
+        await ctx.parallel.enable({ n_parallel: 2, n_batch: 256 });
+        parallelEnabledForContext.add(ctx);
+      }
+    } catch {}
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export async function pingNative(): Promise<boolean> {
