@@ -4,6 +4,7 @@ import React, {
   useMemo,
   useRef,
   useState,
+  useEffect,
 } from "react";
 import {
   View,
@@ -11,81 +12,213 @@ import {
   TextInput,
   TouchableOpacity,
   StyleSheet,
-  ScrollView,
   KeyboardAvoidingView,
   Platform,
   Keyboard,
+  LayoutAnimation,
+  UIManager,
+  StatusBar,
 } from "react-native";
+import { FlashList, type FlashListRef } from "@shopify/flash-list";
+import * as Haptics from "expo-haptics";
+import Animated, {
+  useSharedValue,
+  useAnimatedStyle,
+  withRepeat,
+  withSequence,
+  withTiming,
+  Easing,
+  FadeIn,
+} from "react-native-reanimated";
+import { Ionicons } from "@expo/vector-icons"; // Assuming expo vector icons are available
+import { useSafeAreaInsets } from "react-native-safe-area-context";
+
 import { SettingsContext } from "../context/SettingsContext";
 import type { ChatMessage } from "../lib/ollamaClient";
 import {
   streamProvider,
   pingProvider,
   getModelsProvider,
+  prewarmProvider,
 } from "../lib/providerRouter";
+
+if (
+  Platform.OS === "android" &&
+  UIManager.setLayoutAnimationEnabledExperimental
+) {
+  UIManager.setLayoutAnimationEnabledExperimental(true);
+}
+
+// --- Colors (Gemini High Contrast / Dark Mode) ---
+const COLORS = {
+  background: "#131314", // Deep Black/Dark Grey
+  surfaceFiltered: "#1E1F20", // Input fields, secondary elements
+  surfaceUser: "#2D2E30", // User bubble (Dark Gray)
+  surfaceAssistant: "#004A77", // Assistant bubble tint (Subtle Blue) or Transparent
+  textPrimary: "#E3E3E3",
+  textSecondary: "#A8A8A8", // Hints, timestamps
+  accent: "#A8C7FA", // Light Blue for active elements/icons
+  accentDanger: "#E2B6B6", // Soft Red for stop
+  inputBackground: "#1E1F20",
+  border: "#444746",
+};
+
+// --- Components ---
+
+const ThinkingIndicator = () => {
+  const scale = useSharedValue(1);
+
+  useEffect(() => {
+    scale.value = withRepeat(
+      withSequence(
+        withTiming(1.2, { duration: 600, easing: Easing.ease }),
+        withTiming(1, { duration: 600, easing: Easing.ease }),
+      ),
+      -1,
+      true,
+    );
+  }, []);
+
+  const animatedStyle = useAnimatedStyle(() => ({
+    transform: [{ scale: scale.value }],
+  }));
+
+  return (
+    <View style={styles.thinkingContainer}>
+      <Animated.View style={[styles.thinkingDot, animatedStyle]} />
+      <Text style={styles.thinkingText}>Generating...</Text>
+    </View>
+  );
+};
 
 type BubbleProps = {
   role: ChatMessage["role"];
   content: string;
   isStreaming: boolean;
 };
+
 const MessageBubble = React.memo(function MessageBubble({
   role,
   content,
   isStreaming,
 }: BubbleProps) {
+  const isUser = role === "user";
+
   return (
     <View
-      style={[styles.bubble, role === "user" ? styles.user : styles.assistant]}
+      style={[
+        styles.bubbleRow,
+        isUser
+          ? { justifyContent: "flex-end" }
+          : { justifyContent: "flex-start" },
+      ]}
     >
-      <Text style={styles.bubbleText}>
-        {content || (role === "assistant" && isStreaming ? "…" : "")}
-      </Text>
+      <View
+        style={[
+          styles.bubble,
+          isUser ? styles.bubbleUser : styles.bubbleAssistant,
+        ]}
+      >
+        <Text style={styles.bubbleText}>
+          {content || (role === "assistant" && isStreaming ? "" : "")}
+        </Text>
+        {role === "assistant" && isStreaming && !content && (
+          <ThinkingIndicator />
+        )}
+      </View>
     </View>
   );
 });
 
 export default function ChatScreen() {
+  const insets = useSafeAreaInsets();
   const { settings, saveSettings } = useContext(SettingsContext);
   const baseUrl = useMemo(
     () => `http://${settings.host}:${settings.port}`,
-    [settings.host, settings.port]
+    [settings.host, settings.port],
   );
 
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  type UIMessage = ChatMessage & { id: string };
+  const [messages, setMessages] = useState<UIMessage[]>([]);
   const [input, setInput] = useState("");
   const [isStreaming, setIsStreaming] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [models, setModels] = useState<string[]>([]);
   const [showModels, setShowModels] = useState(false);
 
-  const scrollRef = useRef<ScrollView>(null);
+  const listRef = useRef<FlashListRef<UIMessage>>(null);
   const streamRef = useRef<{ cancel: () => void } | null>(null);
-  // Buffer incoming tokens and flush at ~30–60Hz to reduce re-renders
   const tokenBufferRef = useRef<string>("");
   const flushTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const flushTickRef = useRef<number>(0);
   const nearBottomRef = useRef<boolean>(true);
+  const nextIdRef = useRef<number>(1);
 
-  const onScroll = useCallback((e: any) => {
-    try {
-      const { contentSize, layoutMeasurement, contentOffset } =
-        e.nativeEvent || {};
-      const contentH = contentSize?.height ?? 0;
-      const viewH = layoutMeasurement?.height ?? 0;
-      const offsetY = contentOffset?.y ?? 0;
-      // Consider near-bottom within 80px of the end
-      nearBottomRef.current = contentH - (offsetY + viewH) < 80;
-    } catch {}
+  const toChatMessage = useCallback((m: UIMessage): ChatMessage => {
+    return { role: m.role, content: m.content };
   }, []);
 
+  const makeMessage = useCallback(
+    (role: ChatMessage["role"], content: string): UIMessage => {
+      const id = String(nextIdRef.current++);
+      return { id, role, content };
+    },
+    [],
+  );
+
+  const truncateHistory = useCallback(
+    (history: ChatMessage[]) => {
+      // Simple, safe truncation: keep the most recent messages within both a count and character budget.
+      const maxMessages = 40;
+      const maxChars = 12000;
+
+      const system = history.filter((m) => m.role === "system");
+      const nonSystem = history.filter((m) => m.role !== "system");
+      const tail = nonSystem.slice(Math.max(0, nonSystem.length - maxMessages));
+
+      let total = 0;
+      const trimmed: ChatMessage[] = [];
+      for (let i = tail.length - 1; i >= 0; i--) {
+        const m = tail[i];
+        const cost = m.content.length;
+        if (trimmed.length > 0 && total + cost > maxChars) break;
+        total += cost;
+        trimmed.push(m);
+      }
+
+      trimmed.reverse();
+      return system.length ? [...system.slice(-1), ...trimmed] : trimmed;
+    },
+    [],
+  );
+
+  useEffect(() => {
+    // Warm native context early to reduce TTFT when user enters chat directly.
+    if (settings.mode !== "native") return;
+    if (!settings.model?.startsWith("file://")) return;
+    prewarmProvider({ mode: settings.mode, model: settings.model }).catch(() => {
+      // best-effort
+    });
+  }, [settings.mode, settings.model]);
+
+  // --- Scroll Logic ---
+  const handleScroll = (e: any) => {
+    // Basic near-bottom detection
+    const { contentOffset, layoutMeasurement, contentSize } = e.nativeEvent;
+    const paddingToBottom = 100;
+    nearBottomRef.current =
+      layoutMeasurement.height + contentOffset.y >=
+      contentSize.height - paddingToBottom;
+  };
+
+  // --- Streaming Logic ---
   const startFlushLoop = () => {
     if (flushTimerRef.current) return;
     flushTimerRef.current = setInterval(() => {
       const buf = tokenBufferRef.current;
       if (!buf) return;
       tokenBufferRef.current = "";
-      setMessages((prev: ChatMessage[]) => {
+
+      setMessages((prev) => {
         const next = [...prev];
         const lastIdx = next.length - 1;
         if (lastIdx >= 0 && next[lastIdx].role === "assistant") {
@@ -96,24 +229,26 @@ export default function ChatScreen() {
         }
         return next;
       });
-      // Debounce auto-scroll and only when user is near bottom
-      flushTickRef.current = (flushTickRef.current + 1) % 3; // scroll every 3 flushes
-      if (nearBottomRef.current && flushTickRef.current === 0) {
-        scrollRef.current?.scrollToEnd({ animated: true });
+
+      // Haptics on significant chunks (optional, kept subtle)
+      // Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+
+      // Auto-scroll logic
+      if (nearBottomRef.current) {
+        listRef.current?.scrollToEnd({ animated: false }); // False for smoother stream performance
       }
-    }, 33); // ~30 FPS
+    }, 50); // 20 FPS flush for UI smoothness
   };
 
-  const stopFlushLoop = () => {
+  const stopFlushLoop = (kind: "done" | "error" | "cancel") => {
     if (flushTimerRef.current) {
       clearInterval(flushTimerRef.current);
       flushTimerRef.current = null;
     }
-    // Flush any remaining tokens one last time
     const remaining = tokenBufferRef.current;
     if (remaining) {
       tokenBufferRef.current = "";
-      setMessages((prev: ChatMessage[]) => {
+      setMessages((prev) => {
         const next = [...prev];
         const lastIdx = next.length - 1;
         if (lastIdx >= 0 && next[lastIdx].role === "assistant") {
@@ -125,54 +260,46 @@ export default function ChatScreen() {
         return next;
       });
     }
-  };
-
-  // Truncate history to reduce prompt size and speed up server-side processing
-  const buildTruncatedHistory = (
-    existing: ChatMessage[],
-    newUserMsg: ChatMessage,
-    budgetChars = 4000
-  ): ChatMessage[] => {
-    const withNew = [...existing, newUserMsg];
-    // Always keep the latest message and at least one assistant reply if present
-    let total = 0;
-    const out: ChatMessage[] = [];
-    for (let i = withNew.length - 1; i >= 0; i--) {
-      const m = withNew[i];
-      const len = (m.content || "").length + 16; // include role/overhead
-      if (out.length === 0 || total + len <= budgetChars) {
-        out.push(m);
-        total += len;
-      } else {
-        break;
-      }
+    if (kind === "done") {
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    } else if (kind === "cancel") {
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     }
-    return out.reverse();
   };
 
+  // --- Send / Stop ---
   const send = useCallback(async () => {
     if (!input.trim() || isStreaming) return;
     setError(null);
-
-    const userMsg: ChatMessage = { role: "user", content: input.trim() };
-    const history = buildTruncatedHistory(messages, userMsg);
-    const assistantMsg: ChatMessage = { role: "assistant", content: "" };
-
-    // Update messages with both user and assistant seed in one batch
-    setMessages([...history, assistantMsg]);
-    setInput("");
-
-    // Dismiss keyboard after sending
     Keyboard.dismiss();
 
-    // Preflight connectivity check to provide actionable errors
-    const ok = await pingProvider({ mode: settings.mode, baseUrl });
-    if (!ok) {
-      setError(
-        settings.mode === "native"
-          ? "Native module not available. Build a dev client/EAS with the Ollama native module."
-          : `Cannot reach Ollama at ${baseUrl}. On Android emulator use http://10.0.2.2:11434; on device use your PC's LAN IP and run Ollama bound to 0.0.0.0.`
-      );
+    const userMsg = makeMessage("user", input.trim());
+    const assistantMsg = makeMessage("assistant", "");
+    const historyUI = messages.concat(userMsg);
+    const history = truncateHistory(historyUI.map(toChatMessage));
+
+    setMessages([...historyUI, assistantMsg]);
+    setInput("");
+
+    // Animate list update
+    LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+
+    setTimeout(() => {
+      listRef.current?.scrollToEnd({ animated: true });
+    }, 100);
+
+    // Preflight
+    try {
+      const ok = await pingProvider({ mode: settings.mode, baseUrl });
+      if (!ok) {
+        throw new Error(
+          settings.mode === "native"
+            ? "Native module not ready"
+            : "Cannot reach Ollama",
+        );
+      }
+    } catch (e: any) {
+      setError(e.message);
       return;
     }
 
@@ -191,241 +318,341 @@ export default function ChatScreen() {
       onError: (e) => {
         setError(String(e?.message || e));
         setIsStreaming(false);
-        stopFlushLoop();
+        stopFlushLoop("error");
       },
       onDone: () => {
         setIsStreaming(false);
-        stopFlushLoop();
+        stopFlushLoop("done");
       },
     });
-
     streamRef.current = handle;
   }, [input, isStreaming, settings.mode, baseUrl, settings.model, messages]);
 
   const stop = useCallback(() => {
     streamRef.current?.cancel();
     setIsStreaming(false);
-    stopFlushLoop();
+    stopFlushLoop("cancel");
   }, []);
 
+  // --- Model Toggles ---
   const toggleModels = useCallback(async () => {
-    if (!showModels && models.length === 0) {
+    if (!showModels) {
       try {
+        // quick haptic
+        Haptics.selectionAsync();
         const list = await getModelsProvider({ mode: settings.mode, baseUrl });
         setModels(list);
       } catch (e) {
-        setError(`Models fetch failed: ${String((e as any)?.message || e)}`);
+        console.warn(e);
       }
     }
-    setShowModels((v) => !v);
-  }, [showModels, models.length, settings.mode, baseUrl]);
+    LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+    setShowModels(!showModels);
+  }, [showModels, settings.mode, baseUrl]);
 
-  const chooseModel = useCallback(
-    async (m: string) => {
-      await saveSettings({ model: m });
-      setShowModels(false);
-    },
-    [saveSettings]
-  );
+  const chooseModel = (m: string) => {
+    saveSettings({ model: m });
+    setShowModels(false);
+  };
 
   return (
-    <KeyboardAvoidingView
-      style={styles.container}
-      behavior={Platform.OS === "ios" ? "padding" : "height"}
-      keyboardVerticalOffset={100}
-    >
-      <ScrollView
-        ref={scrollRef}
-        contentContainerStyle={styles.messages}
-        keyboardShouldPersistTaps="handled"
-        onScroll={onScroll}
-        scrollEventThrottle={16}
-      >
-        {messages.map((m, i) => (
-          <MessageBubble
-            key={i}
-            role={m.role}
-            content={m.content}
-            isStreaming={isStreaming}
+    <View style={[styles.container, { backgroundColor: COLORS.background }]}>
+      <StatusBar barStyle="light-content" backgroundColor={COLORS.background} />
+
+      {/* Header / Mode Switcher */}
+      <View style={[styles.header, { marginTop: insets.top }]}>
+        <TouchableOpacity onPress={toggleModels} style={styles.modelSelector}>
+          <Ionicons name="cube-outline" size={16} color={COLORS.accent} />
+          <Text style={styles.modelName}>{settings.model}</Text>
+          <Ionicons
+            name="chevron-down"
+            size={14}
+            color={COLORS.textSecondary}
           />
-        ))}
-      </ScrollView>
+        </TouchableOpacity>
 
-      {error ? <Text style={styles.error}>Error: {error}</Text> : null}
-
-      <View style={styles.inputRow}>
-        <TextInput
-          style={styles.input}
-          value={input}
-          onChangeText={setInput}
-          placeholder={`Message (${settings.model})`}
-          editable={!isStreaming}
-          multiline
-          maxLength={1000}
-          returnKeyType="send"
-          onSubmitEditing={send}
-          blurOnSubmit={false}
-        />
-        {isStreaming ? (
-          <TouchableOpacity onPress={stop} style={[styles.button, styles.stop]}>
-            <Text style={styles.buttonText}>Stop</Text>
-          </TouchableOpacity>
-        ) : (
-          <TouchableOpacity onPress={send} style={styles.button}>
-            <Text style={styles.buttonText}>Send</Text>
-          </TouchableOpacity>
-        )}
-      </View>
-      <Text style={styles.hint}>
-        Connect your phone and Ollama host to the same LAN. Endpoint: {baseUrl}
-      </Text>
-      <View style={styles.modeRow}>
-        <Text style={styles.label}>Mode:</Text>
-        <TouchableOpacity
-          onPress={() => saveSettings({ mode: "remote" })}
-          style={[
-            styles.modeBtn,
-            settings.mode === "remote" && styles.modeBtnActive,
-          ]}
-        >
-          <Text
+        <View style={styles.modePill}>
+          <TouchableOpacity
+            onPress={() => saveSettings({ mode: "remote" })}
             style={[
-              styles.modeText,
-              settings.mode === "remote" && styles.modeTextActive,
+              styles.modeOption,
+              settings.mode === "remote" && styles.modeActive,
             ]}
           >
-            Remote HTTP
-          </Text>
-        </TouchableOpacity>
-        <TouchableOpacity
-          onPress={() => saveSettings({ mode: "native" })}
-          style={[
-            styles.modeBtn,
-            settings.mode === "native" && styles.modeBtnActive,
-          ]}
-        >
-          <Text
+            <Text
+              style={[
+                styles.modeText,
+                settings.mode === "remote" && styles.modeTextActive,
+              ]}
+            >
+              Remote
+            </Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            onPress={() => saveSettings({ mode: "native" })}
             style={[
-              styles.modeText,
-              settings.mode === "native" && styles.modeTextActive,
+              styles.modeOption,
+              settings.mode === "native" && styles.modeActive,
             ]}
           >
-            Native
-          </Text>
-        </TouchableOpacity>
+            <Text
+              style={[
+                styles.modeText,
+                settings.mode === "native" && styles.modeTextActive,
+              ]}
+            >
+              Native
+            </Text>
+          </TouchableOpacity>
+        </View>
       </View>
-      <View style={styles.modelRow}>
-        <TouchableOpacity
-          onPress={toggleModels}
-          style={[styles.button, styles.modelButton]}
-        >
-          <Text style={styles.buttonText}>Model: {settings.model}</Text>
-        </TouchableOpacity>
-      </View>
+
+      {/* Model List Dropdown */}
       {showModels && (
-        <View style={styles.modelList}>
-          <ScrollView horizontal contentContainerStyle={styles.modelListInner}>
-            {models.map((m) => (
+        <View style={styles.modelDropdown}>
+          {models.length === 0 ? (
+            <Text style={{ color: "#666", padding: 10 }}>Loading...</Text>
+          ) : (
+            models.map((m) => (
               <TouchableOpacity
                 key={m}
                 onPress={() => chooseModel(m)}
-                style={[styles.chip, m === settings.model && styles.chipActive]}
+                style={styles.modelOption}
               >
-                <Text
-                  style={[
-                    styles.chipText,
-                    m === settings.model && styles.chipTextActive,
-                  ]}
-                >
-                  {m}
-                </Text>
+                <Text style={{ color: COLORS.textPrimary }}>{m}</Text>
+                {m === settings.model && (
+                  <Ionicons name="checkmark" size={16} color={COLORS.accent} />
+                )}
               </TouchableOpacity>
-            ))}
-          </ScrollView>
+            ))
+          )}
         </View>
       )}
-    </KeyboardAvoidingView>
+
+      {/* Chat List */}
+      <FlashList
+        ref={listRef}
+        data={messages}
+        renderItem={({ item }) => (
+          <MessageBubble
+            role={item.role}
+            content={item.content}
+            isStreaming={isStreaming}
+          />
+        )}
+        keyExtractor={(item) => item.id}
+        getItemType={(item) => item.role}
+        contentContainerStyle={{ padding: 16, paddingBottom: 120 }}
+        keyboardDismissMode="on-drag"
+        onScroll={handleScroll}
+        keyboardShouldPersistTaps="handled"
+      />
+
+      {/* Error Banner */}
+      {error && (
+        <Animated.View entering={FadeIn} style={styles.errorBanner}>
+          <Ionicons name="warning" size={16} color="#fff" />
+          <Text style={styles.errorText}>{error}</Text>
+          <TouchableOpacity onPress={() => setError(null)}>
+            <Ionicons name="close" size={16} color="#fff" />
+          </TouchableOpacity>
+        </Animated.View>
+      )}
+
+      {/* Floating Input Area */}
+      <KeyboardAvoidingView
+        behavior={Platform.OS === "ios" ? "padding" : undefined}
+        keyboardVerticalOffset={Platform.OS === "ios" ? 0 : 0}
+        style={styles.inputWrapper}
+      >
+        <View
+          style={[
+            styles.floatingIsland,
+            { marginBottom: Platform.OS === "android" ? 12 : 0 },
+          ]}
+        >
+          <TextInput
+            style={styles.textInput}
+            value={input}
+            onChangeText={setInput}
+            placeholder="Ask anything..."
+            placeholderTextColor={COLORS.textSecondary}
+            multiline
+            cursorColor={COLORS.accent}
+          />
+
+          <TouchableOpacity
+            onPress={isStreaming ? stop : send}
+            style={styles.sendButton}
+            activeOpacity={0.7}
+          >
+            {isStreaming ? (
+              <View style={styles.stopIcon} />
+            ) : (
+              <Ionicons name="arrow-up" size={20} color={COLORS.background} />
+            )}
+          </TouchableOpacity>
+        </View>
+      </KeyboardAvoidingView>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
   container: { flex: 1 },
-  messages: { padding: 12 },
-  bubble: {
-    padding: 10,
-    borderRadius: 10,
-    marginVertical: 6,
-    maxWidth: "85%",
-  },
-  user: { alignSelf: "flex-end", backgroundColor: "#DCF8C6" },
-  assistant: { alignSelf: "flex-start", backgroundColor: "#eee" },
-  bubbleText: { fontSize: 16, color: "#111" },
-  inputRow: {
+  header: {
     flexDirection: "row",
-    padding: 8,
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: "#ddd",
-  },
-  input: {
-    flex: 1,
-    backgroundColor: "#fff",
-    borderWidth: 1,
-    borderColor: "#ccc",
-    borderRadius: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    marginRight: 8,
-    maxHeight: 100,
-    minHeight: 40,
-  },
-  button: {
-    backgroundColor: "#007AFF",
+    justifyContent: "space-between",
+    alignItems: "center",
     paddingHorizontal: 16,
-    justifyContent: "center",
-    borderRadius: 8,
+    paddingVertical: 12,
+    zIndex: 10,
   },
-  stop: { backgroundColor: "#FF3B30" },
-  buttonText: { color: "#fff", fontWeight: "700" },
-  hint: { textAlign: "center", color: "#666", padding: 8, fontSize: 12 },
-  hintSmall: {
-    textAlign: "center",
-    color: "#888",
-    paddingHorizontal: 8,
-    fontSize: 11,
-  },
-  error: { color: "#e00", textAlign: "center", paddingHorizontal: 12 },
-  modeRow: {
+  modelSelector: {
     flexDirection: "row",
     alignItems: "center",
-    justifyContent: "center",
-    gap: 8,
-    paddingHorizontal: 8,
-    paddingVertical: 8,
-  },
-  label: { fontSize: 13, color: "#333", fontWeight: "600" },
-  modeBtn: {
+    gap: 6,
+    backgroundColor: COLORS.surfaceFiltered,
+    paddingVertical: 6,
     paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: "#ccc",
-  },
-  modeBtnActive: { backgroundColor: "#E6F0FF", borderColor: "#007AFF" },
-  modeText: { color: "#333", fontSize: 12 },
-  modeTextActive: { color: "#007AFF", fontWeight: "700" },
-  modelRow: { flexDirection: "row", paddingHorizontal: 8, paddingBottom: 4 },
-  modelButton: { backgroundColor: "#5856D6", marginRight: 8 },
-  modelList: { paddingHorizontal: 8, paddingBottom: 8 },
-  modelListInner: { alignItems: "center" },
-  chip: {
-    paddingHorizontal: 10,
-    paddingVertical: 6,
     borderRadius: 16,
-    borderWidth: 1,
-    borderColor: "#ccc",
-    marginRight: 8,
   },
-  chipActive: { backgroundColor: "#E6F0FF", borderColor: "#007AFF" },
-  chipText: { color: "#333" },
-  chipTextActive: { color: "#007AFF", fontWeight: "700" },
+  modelName: {
+    color: COLORS.textPrimary,
+    fontWeight: "600",
+    fontSize: 14,
+  },
+  modelDropdown: {
+    position: "absolute",
+    top: 100,
+    left: 16,
+    right: 16,
+    backgroundColor: COLORS.surfaceFiltered,
+    borderRadius: 12,
+    padding: 8,
+    zIndex: 20,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    elevation: 5,
+  },
+  modelOption: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    paddingVertical: 12,
+    paddingHorizontal: 12,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: COLORS.border,
+  },
+  modePill: {
+    flexDirection: "row",
+    backgroundColor: COLORS.surfaceFiltered,
+    borderRadius: 20,
+    padding: 2,
+  },
+  modeOption: {
+    paddingVertical: 6,
+    paddingHorizontal: 12,
+    borderRadius: 18,
+  },
+  modeActive: {
+    backgroundColor: "#37383A",
+  },
+  modeText: { color: COLORS.textSecondary, fontSize: 12, fontWeight: "600" },
+  modeTextActive: { color: COLORS.textPrimary },
+
+  bubbleRow: {
+    flexDirection: "row",
+    width: "100%",
+    marginBottom: 12,
+  },
+  bubble: {
+    maxWidth: "85%",
+    borderRadius: 18,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+  },
+  bubbleUser: {
+    backgroundColor: COLORS.surfaceUser,
+    borderTopRightRadius: 4,
+  },
+  bubbleAssistant: {
+    backgroundColor: "transparent",
+    marginLeft: -10, // Slight visual offset to align with edge
+  },
+  bubbleText: {
+    color: COLORS.textPrimary,
+    fontSize: 16,
+    lineHeight: 24,
+  },
+  thinkingContainer: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    marginTop: 8,
+  },
+  thinkingDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: COLORS.accent,
+  },
+  thinkingText: {
+    color: COLORS.textSecondary,
+    fontSize: 12,
+  },
+
+  inputWrapper: {
+    width: "100%",
+    backgroundColor: "transparent",
+    paddingHorizontal: 16,
+    paddingBottom: 24, // Lift from bottom
+  },
+  floatingIsland: {
+    flexDirection: "row",
+    alignItems: "flex-end",
+    backgroundColor: COLORS.inputBackground,
+    borderRadius: 28,
+    paddingHorizontal: 6,
+    paddingVertical: 6,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+  },
+  textInput: {
+    flex: 1,
+    color: COLORS.textPrimary,
+    fontSize: 16,
+    maxHeight: 120,
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+  },
+  sendButton: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: COLORS.textPrimary, // White circle
+    justifyContent: "center",
+    alignItems: "center",
+    marginBottom: 2,
+  },
+  stopIcon: {
+    width: 14,
+    height: 14,
+    backgroundColor: COLORS.background,
+    borderRadius: 2,
+  },
+  errorBanner: {
+    position: "absolute",
+    bottom: 100,
+    left: 16,
+    right: 16,
+    backgroundColor: "#331111",
+    borderWidth: 1,
+    borderColor: "#FF3B30",
+    padding: 12,
+    borderRadius: 8,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  errorText: { color: "#FF8888", flex: 1, fontSize: 12 },
 });

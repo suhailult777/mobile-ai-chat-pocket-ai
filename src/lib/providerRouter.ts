@@ -4,7 +4,12 @@ import {
   getModels as getModelsHttp,
   ping as pingHttp,
 } from "./ollamaClient";
-import { streamNative, getModelsNative, pingNative } from "./nativeClient";
+import {
+  streamNative,
+  getModelsNative,
+  pingNative,
+  prewarmNative,
+} from "./nativeClient";
 
 export type ConnectionMode = "remote" | "native";
 
@@ -50,4 +55,12 @@ export function streamProvider(opts: {
     onError: opts.onError,
     onDone: opts.onDone,
   });
+}
+
+export async function prewarmProvider(opts: {
+  mode: ConnectionMode;
+  model: string;
+}): Promise<void> {
+  if (opts.mode !== "native") return;
+  await prewarmNative(opts.model);
 }

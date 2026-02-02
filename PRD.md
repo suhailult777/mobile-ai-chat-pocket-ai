@@ -357,3 +357,41 @@ Mitigation: Only allow user-downloaded models with visible license info; recomme
     Provide a “Getting Started” guide covering running Ollama on desktop, network connection setup, enabling on-device Ollama, system requirements, and recommended models.
     Include a developer README detailing steps to create dev clients, add native modules, and build on Android via EAS.
     Maintain an appendix with key references including Ollama’s official repo, community mobile clients, Android LLM guides, and Expo documentation.
+
+phase 5 -
+
+**Project:** React Native Offline AI Chat App (Ollama Local Models)
+**Phase:** High-Performance UI & Polish (Gemini High Contrast)
+**Author:** Microsoft AI Mobile Division � React Native Team (Simulation)
+**Date:** February 2026
+
+---
+
+## 1.  Objective
+
+Overhaul the user interface to match modern A-Tier AI applications (specifically **Gemini High Contrast** style) while maximizing *perceived performance* and *rendering efficiency* on mobile devices.
+
+---
+
+## 2.  UI/UX Specifications
+
+### 2.1 Visual Design System 'Gemini Dark'
+- **Background:** Deep Black (#131314) for maximum contrast on OLED.
+- **Surface Colors:** Dark Gray (#1E1F20) for inputs; Transparent for assistant bubbles; Dark Gray (#2D2E30) for user bubbles.
+- **Typography:** Clean, white primary text (#E3E3E3); subtle gray secondary text (#A8A8A8).
+- **Interactive Elements:** 'Floating Island' input bar detached from the bottom edge.
+
+### 2.2 Performance Optimizations
+- **List Rendering:** Replace ScrollView with **FlashList** (recycling views) to handle large chat histories without frame drops.
+- **Latency Masking:**
+  - **Thinking Indicator:** Pulsing dot animation during TTFT (Time To First Token).
+  - **Optimistic Updates:** Instant user bubble appearance.
+  - **Haptic Feedback:** Subtle vibration cues on interaction and generation completion.
+- **Animations:** Use eact-native-reanimated for 120Hz-capable layout transitions (fade-ins, expansions) entirely on the UI thread.
+
+### 2.3 Technical Stack Updates
+- **Core:** @shopify/flash-list, eact-native-reanimated, expo-haptics
+- **Icons:** expo-vector-icons (IonIcons)
+- **Input:** KeyboardAvoidingView with platform-specific offsets.
+
+---
