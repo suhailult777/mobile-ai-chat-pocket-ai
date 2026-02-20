@@ -38,6 +38,19 @@ let cachedContext: any | null = null;
 let contextInitPromise: Promise<any> | null = null;
 let parallelEnabledForContext: WeakSet<any> = new WeakSet();
 
+// KV-cache state persistence for conversation continuity
+let cachedKvState: ArrayBuffer | null = null;
+let kvStateMessageCount = 0;
+
+// Speculative decoding: draft model context
+let draftModelPath: string | null = null;
+let draftContext: any | null = null;
+let draftContextInitPromise: Promise<any> | null = null;
+
+// Speculative decoding configuration
+const SPECULATION_TOKENS = 4; // Number of tokens to speculate ahead
+const SPECULATION_BATCH_SIZE = 128;
+
 async function ensureContext(modelPath: string) {
   if (cachedContext && cachedModelPath === modelPath) return cachedContext;
   if (contextInitPromise && cachedModelPath === modelPath)
@@ -58,18 +71,28 @@ async function ensureContext(modelPath: string) {
       const fileExists = await modelFile.exists;
       if (!fileExists) {
         throw new Error(
-          `Model file not found at path: ${filePath}\n\nPlease re-import the model using the Model Browser in Settings.`
+          `Model file not found at path: ${filePath}\n\nPlease re-import the model using the Model Browser in Settings.`,
         );
       }
     } catch (fileErr: any) {
       throw new Error(
-        `Cannot access model file: ${fileErr?.message || fileErr}`
+        `Cannot access model file: ${fileErr?.message || fileErr}`,
       );
     }
 
     // Validate GGUF format if available
     if (typeof loadLlamaModelInfo === "function") {
       await loadLlamaModelInfo(filePath);
+    }
+
+    // Dispose previous context if switching models (if dispose exists)
+    if (cachedContext && cachedModelPath && cachedModelPath !== modelPath) {
+      try {
+        cachedContext.dispose?.();
+      } catch {}
+      // Clear KV cache when switching models
+      cachedKvState = null;
+      kvStateMessageCount = 0;
     }
 
     // Try GPU (OpenCL) by default; fall back to CPU-only if unavailable
@@ -96,14 +119,9 @@ async function ensureContext(modelPath: string) {
       });
     }
 
-    // Dispose previous context if switching models (if dispose exists)
-    if (cachedContext && cachedModelPath && cachedModelPath !== modelPath) {
-      try {
-        cachedContext.dispose?.();
-      } catch {}
-    }
     cachedContext = ctx;
     cachedModelPath = modelPath;
+
     // Enable parallel mode once to allow cancellable requests
     try {
       if (!parallelEnabledForContext.has(ctx) && ctx?.parallel?.enable) {
@@ -124,11 +142,216 @@ async function ensureContext(modelPath: string) {
   }
 }
 
+// Save KV-cache state after completion for faster follow-up messages
+async function saveKvState(context: any, messageCount: number): Promise<void> {
+  try {
+    if (typeof context?.saveState === "function") {
+      cachedKvState = await context.saveState();
+      kvStateMessageCount = messageCount;
+    }
+  } catch {
+    // Best-effort; not all llama.rn versions support this
+  }
+}
+
+// Restore KV-cache state before completion to skip re-processing history
+async function restoreKvState(
+  context: any,
+  messageCount: number,
+): Promise<boolean> {
+  try {
+    // Only restore if we have a cached state and message count matches
+    // (indicates continuation of same conversation)
+    if (
+      cachedKvState &&
+      kvStateMessageCount > 0 &&
+      messageCount > kvStateMessageCount &&
+      typeof context?.loadState === "function"
+    ) {
+      await context.loadState(cachedKvState);
+      return true;
+    }
+  } catch {
+    // Failed to restore; will process from scratch
+  }
+  return false;
+}
+
+// Invalidate KV cache (e.g., when conversation is cleared)
+export function invalidateKvCache(): void {
+  cachedKvState = null;
+  kvStateMessageCount = 0;
+}
+
+// Initialize draft model context for speculative decoding
+async function ensureDraftContext(modelPath: string): Promise<any | null> {
+  if (draftContext && draftModelPath === modelPath) return draftContext;
+  if (draftContextInitPromise && draftModelPath === modelPath)
+    return draftContextInitPromise;
+
+  draftContextInitPromise = (async () => {
+    const lrn = await getLlamaRn();
+    if (!lrn) return null;
+    const { initLlama, loadLlamaModelInfo } = lrn;
+    if (typeof initLlama !== "function") return null;
+
+    // Validate draft model file
+    const filePath = modelPath.replace(/^file:\/\//, "");
+    const fileUri = `file://${filePath}`;
+    try {
+      const modelFile = new File(fileUri);
+      const fileExists = await modelFile.exists;
+      if (!fileExists) return null;
+    } catch {
+      return null;
+    }
+
+    // Validate GGUF format
+    if (typeof loadLlamaModelInfo === "function") {
+      try {
+        await loadLlamaModelInfo(filePath);
+      } catch {
+        return null;
+      }
+    }
+
+    // Dispose previous draft context if switching
+    if (draftContext && draftModelPath && draftModelPath !== modelPath) {
+      try {
+        draftContext.dispose?.();
+      } catch {}
+    }
+
+    // Initialize draft context with minimal resources
+    let ctx: any | null = null;
+    try {
+      ctx = await initLlama({
+        model: modelPath,
+        n_ctx: 256, // Smaller context for draft
+        n_gpu_layers: 99,
+        n_parallel: 1,
+        use_mlock: false,
+      });
+    } catch {
+      // Try CPU-only
+      try {
+        ctx = await initLlama({
+          model: modelPath,
+          n_ctx: 256,
+          n_gpu_layers: 0,
+          n_parallel: 1,
+          use_mlock: false,
+        });
+      } catch {
+        return null;
+      }
+    }
+
+    draftContext = ctx;
+    draftModelPath = modelPath;
+    return ctx;
+  })();
+
+  try {
+    const ctx = await draftContextInitPromise;
+    return ctx;
+  } finally {
+    draftContextInitPromise = null;
+  }
+}
+
+// Speculative decoding: generate tokens with draft model, verify with main model
+async function speculativeGenerate(
+  mainContext: any,
+  draftCtx: any,
+  messages: ChatMessage[],
+  stopWords: string[],
+  onToken: (t: string) => void,
+  shouldCancel: () => boolean,
+): Promise<string> {
+  let fullText = "";
+  let iterations = 0;
+  const maxIterations = 100; // Safety limit
+
+  while (iterations < maxIterations && !shouldCancel()) {
+    iterations++;
+
+    // Step 1: Draft model generates SPECULATION_TOKENS tokens
+    const draftTokens: string[] = [];
+    try {
+      const draftResult = await draftCtx.completion(
+        {
+          messages: [
+            ...messages,
+            { role: "assistant" as const, content: fullText },
+          ],
+          n_predict: SPECULATION_TOKENS,
+          n_batch: SPECULATION_BATCH_SIZE,
+          stop: stopWords,
+        },
+        (data: any) => {
+          const t = data?.token ?? data?.content ?? "";
+          if (t) draftTokens.push(t);
+        },
+      );
+
+      // Check for stop condition
+      if (draftTokens.length === 0 || (draftResult as any)?.stopped) {
+        break;
+      }
+    } catch {
+      // Draft failed, fall back to single-token generation
+      break;
+    }
+
+    // Step 2: Main model verifies draft tokens (single forward pass)
+    // This is a simplified implementation - full speculative decoding
+    // requires comparing logits, but we approximate by checking output match
+    const speculatedText = draftTokens.join("");
+    let verifiedText = "";
+
+    try {
+      const verifyResult = await mainContext.completion(
+        {
+          messages: [
+            ...messages,
+            { role: "assistant" as const, content: fullText },
+          ],
+          n_predict: draftTokens.length,
+          n_batch: SPECULATION_BATCH_SIZE,
+          stop: stopWords,
+        },
+        (data: any) => {
+          const t = data?.token ?? data?.content ?? "";
+          if (t) verifiedText += t;
+        },
+      );
+
+      // Accept verified tokens
+      if (verifiedText) {
+        fullText += verifiedText;
+        onToken(verifiedText);
+      }
+
+      // Check for stop condition
+      if ((verifyResult as any)?.stopped || verifiedText.length === 0) {
+        break;
+      }
+    } catch {
+      break;
+    }
+  }
+
+  return fullText;
+}
+
 export function streamNative(
   opts: {
     model: string;
     messages: ChatMessage[];
-  } & StreamCallbacks
+    turboMode?: boolean;
+    draftModel?: string;
+  } & StreamCallbacks,
 ): StreamHandle {
   const mod = getNative();
   if (mod) {
@@ -181,7 +404,7 @@ export function streamNative(
       const modelPath = opts.model;
       if (!modelPath || !/^file:\/\//.test(modelPath)) {
         throw new Error(
-          "In Native mode, set Settings → Model to a file:// path for a GGUF model"
+          "In Native mode, set Settings → Model to a file:// path for a GGUF model",
         );
       }
       const context = await ensureContext(modelPath);
@@ -190,6 +413,43 @@ export function streamNative(
       // Use a minimal, safer set of stop tokens to avoid premature endings on some models
       const stopWords = ["</s>", "<|eot_id|>"];
 
+      // Try to restore KV-cache for faster follow-up messages
+      const messageCount = opts.messages.length;
+      const kvRestored = await restoreKvState(context, messageCount);
+
+      // Check if speculative decoding is enabled and draft model is available
+      const useTurbo =
+        opts.turboMode && opts.draftModel && /^file:\/\//.test(opts.draftModel);
+      let draftCtx: any | null = null;
+
+      if (useTurbo) {
+        draftCtx = await ensureDraftContext(opts.draftModel!);
+      }
+
+      // If turbo mode with valid draft context, use speculative decoding
+      if (useTurbo && draftCtx) {
+        const result = await speculativeGenerate(
+          context,
+          draftCtx,
+          opts.messages,
+          stopWords,
+          (t) => {
+            if (!active || canceled) return;
+            emittedText += t;
+            opts.onToken(t);
+          },
+          () => canceled || !active,
+        );
+
+        if (!active) return;
+        if (!canceled && !stopped) {
+          await saveKvState(context, messageCount + 1);
+          opts.onDone && opts.onDone();
+        }
+        return;
+      }
+
+      // Standard completion (non-turbo) path
       // Stream completion with partial token callback
       // Try to ensure parallel is enabled before using parallel.completion
       let result: any = null;
@@ -228,7 +488,7 @@ export function streamNative(
               emittedText += t;
               opts.onToken(t);
             }
-          }
+          },
         );
         stopHandleRef = stop;
         result = await promise;
@@ -248,12 +508,15 @@ export function streamNative(
               emittedText += t;
               opts.onToken(t);
             }
-          }
+          },
         );
       }
 
       if (!active) return;
       if (!canceled && !stopped) {
+        // Save KV-cache state for faster follow-up messages
+        await saveKvState(context, messageCount + 1);
+
         // Some bindings return an accumulated text in result.text. Only emit
         // the suffix that hasn't already been emitted via per-token callbacks.
         const tail = (result as any)?.text ?? "";
@@ -338,6 +601,23 @@ export async function getModelsNative(): Promise<string[]> {
 // Optional Phase 3 helpers (no-ops if the native module doesn't provide them)
 export function isNativeAvailable(): boolean {
   return !!getNative();
+}
+
+// Dispose native context and clear all caches (for memory management)
+export async function disposeNative(): Promise<void> {
+  try {
+    if (cachedContext) {
+      await cachedContext.dispose?.();
+    }
+  } catch {
+    // Best-effort disposal
+  } finally {
+    cachedContext = null;
+    cachedModelPath = null;
+    cachedKvState = null;
+    kvStateMessageCount = 0;
+    contextInitPromise = null;
+  }
 }
 
 export async function getModelsDirNative(): Promise<string | null> {

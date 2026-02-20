@@ -6,6 +6,7 @@ import {
   TouchableOpacity,
   StyleSheet,
   ScrollView,
+  Switch,
 } from "react-native";
 import { SettingsContext } from "../context/SettingsContext";
 import { getModelsProvider, pingProvider } from "../lib/providerRouter";
@@ -17,22 +18,44 @@ import {
 import { File, Directory, Paths } from "expo-file-system";
 import * as DocumentPicker from "expo-document-picker";
 
+// Recommended draft models for speculative decoding (sorted by size)
+const RECOMMENDED_DRAFT_MODELS = [
+  {
+    name: "Qwen2-0.5B-Instruct-Q4_K_M.gguf",
+    size: "~350MB",
+    recommended: true,
+  },
+  {
+    name: "SmolLM-360M-Instruct-Q4_K_M.gguf",
+    size: "~250MB",
+    recommended: false,
+  },
+  {
+    name: "TinyLlama-1.1B-Chat-Q4_K_M.gguf",
+    size: "~700MB",
+    recommended: false,
+  },
+];
+
 export default function SettingsScreen() {
   const { settings, saveSettings } = useContext(SettingsContext);
   const [host, setHost] = useState(settings.host);
   const [port, setPort] = useState(settings.port);
   const [model, setModel] = useState(settings.model);
   const [mode, setMode] = useState<"remote" | "native">(settings.mode);
+  const [turboMode, setTurboMode] = useState(settings.turboMode);
+  const [draftModel, setDraftModel] = useState(settings.draftModel);
 
   const [status, setStatus] = useState<string>("");
   const [nativeInfo, setNativeInfo] = useState<string>("");
   const [showBrowser, setShowBrowser] = useState(false);
   const [browserFiles, setBrowserFiles] = useState<string[]>([]);
   const [modelsDir, setModelsDir] = useState<string>("");
+  const [showDraftPicker, setShowDraftPicker] = useState(false);
   const baseUrl = useMemo(() => `http://${host}:${port}`, [host, port]);
 
   const onSave = async () => {
-    await saveSettings({ host, port, model, mode });
+    await saveSettings({ host, port, model, mode, turboMode, draftModel });
     setStatus("Saved");
     // Prewarm native model automatically to reduce cold starts
     if (mode === "native" && model.startsWith("file://")) {
@@ -49,8 +72,8 @@ export default function SettingsScreen() {
       ok
         ? "Connection OK"
         : mode === "native"
-        ? "Native module not available or ping failed"
-        : "Failed to connect"
+          ? "Native module not available or ping failed"
+          : "Failed to connect",
     );
     if (mode === "native") {
       // Try to surface optional native details for Phase 3
@@ -180,7 +203,7 @@ export default function SettingsScreen() {
                     try {
                       const modelsDirectory = new Directory(
                         Paths.document,
-                        "models"
+                        "models",
                       );
                       if (!(await modelsDirectory.exists)) {
                         await modelsDirectory.create();
@@ -192,7 +215,7 @@ export default function SettingsScreen() {
                           (item) =>
                             item instanceof File &&
                             item.name.toLowerCase().endsWith(".gguf") &&
-                            (item.size || 0) > 0
+                            (item.size || 0) > 0,
                         )
                         .map((item) => item.uri);
                       setBrowserFiles(ggufs);
@@ -222,7 +245,7 @@ export default function SettingsScreen() {
                       }
                       const modelsDirectory = new Directory(
                         Paths.document,
-                        "models"
+                        "models",
                       );
                       if (!(await modelsDirectory.exists)) {
                         await modelsDirectory.create();
@@ -232,7 +255,7 @@ export default function SettingsScreen() {
                       const cachedFile = new File(file.uri);
                       const destinationFile = new File(
                         modelsDirectory.uri,
-                        file.name
+                        file.name,
                       );
                       await cachedFile.copy(destinationFile);
                       // Persist selection to use the just-imported model immediately
@@ -246,7 +269,7 @@ export default function SettingsScreen() {
                         `Imported and selected: ${file.name} (${(
                           (destinationFile.size || 0) /
                           (1024 * 1024)
-                        ).toFixed(2)} MB)`
+                        ).toFixed(2)} MB)`,
                       );
 
                       // Refresh the browser list
@@ -256,7 +279,7 @@ export default function SettingsScreen() {
                           (item) =>
                             item instanceof File &&
                             item.name.toLowerCase().endsWith(".gguf") &&
-                            (item.size || 0) > 0
+                            (item.size || 0) > 0,
                         )
                         .map((item) => item.uri);
                       setModelsDir(modelsDirectory.uri);
@@ -305,6 +328,108 @@ export default function SettingsScreen() {
               </View>
             )}
           </>
+        )}
+
+        {/* Turbo Mode (Speculative Decoding) - Only for Native mode */}
+        {mode === "native" && (
+          <View style={styles.turboSection}>
+            <View style={styles.turboHeader}>
+              <View>
+                <Text style={styles.sectionTitle}>⚡ Turbo Mode</Text>
+                <Text style={styles.hintSmall}>
+                  Uses a small draft model for 1.5-2x faster inference
+                </Text>
+              </View>
+              <Switch
+                value={turboMode}
+                onValueChange={(value) => {
+                  setTurboMode(value);
+                  if (!value) {
+                    // Clear draft model when disabling
+                    setDraftModel("");
+                  }
+                }}
+                trackColor={{ false: "#767577", true: "#81b0ff" }}
+                thumbColor={turboMode ? "#007AFF" : "#f4f3f4"}
+              />
+            </View>
+
+            {turboMode && (
+              <View style={styles.draftModelSection}>
+                <Text style={styles.label}>Draft Model</Text>
+                <Text style={styles.hintSmall}>
+                  Select a small GGUF model (~0.5B params) for speculation
+                </Text>
+
+                {draftModel ? (
+                  <View style={styles.selectedDraft}>
+                    <Text style={styles.fileText} numberOfLines={1}>
+                      {draftModel.split("/").pop()}
+                    </Text>
+                    <TouchableOpacity
+                      onPress={() => setDraftModel("")}
+                      style={styles.clearButton}
+                    >
+                      <Text style={styles.clearButtonText}>✕</Text>
+                    </TouchableOpacity>
+                  </View>
+                ) : (
+                  <TouchableOpacity
+                    onPress={() => setShowDraftPicker(true)}
+                    style={[styles.button, styles.secondary]}
+                  >
+                    <Text style={styles.buttonText}>Select Draft Model</Text>
+                  </TouchableOpacity>
+                )}
+
+                {showDraftPicker && (
+                  <View style={styles.draftPicker}>
+                    <Text style={styles.hintSmall}>
+                      Recommended draft models:
+                    </Text>
+                    {RECOMMENDED_DRAFT_MODELS.map((dm) => (
+                      <View key={dm.name} style={styles.draftOption}>
+                        <Text style={styles.draftName}>
+                          {dm.name} ({dm.size}){dm.recommended && " ⭐"}
+                        </Text>
+                      </View>
+                    ))}
+                    <Text style={styles.hintSmall}>
+                      Select from your imported models:
+                    </Text>
+                    {browserFiles.length === 0 ? (
+                      <Text style={styles.hintSmall}>
+                        No models imported yet. Use Model Browser above.
+                      </Text>
+                    ) : (
+                      browserFiles
+                        .filter((f) => f !== model) // Exclude main model
+                        .map((f) => (
+                          <TouchableOpacity
+                            key={f}
+                            onPress={() => {
+                              setDraftModel(f);
+                              setShowDraftPicker(false);
+                            }}
+                            style={styles.fileItem}
+                          >
+                            <Text style={styles.fileText}>
+                              {f.split("/").pop()}
+                            </Text>
+                          </TouchableOpacity>
+                        ))
+                    )}
+                    <TouchableOpacity
+                      onPress={() => setShowDraftPicker(false)}
+                      style={[styles.button, { marginTop: 8 }]}
+                    >
+                      <Text style={styles.buttonText}>Close</Text>
+                    </TouchableOpacity>
+                  </View>
+                )}
+              </View>
+            )}
+          </View>
         )}
 
         <Text style={styles.status}>{status}</Text>
@@ -374,4 +499,57 @@ const styles = StyleSheet.create({
     borderBottomColor: "#eee",
   },
   fileText: { color: "#333", fontSize: 12 },
+  // Turbo Mode styles
+  turboSection: {
+    marginTop: 20,
+    padding: 12,
+    backgroundColor: "#F8F9FA",
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "#E0E0E0",
+  },
+  turboHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+  },
+  draftModelSection: {
+    marginTop: 12,
+    paddingTop: 12,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: "#ddd",
+  },
+  selectedDraft: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    backgroundColor: "#E6F0FF",
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 8,
+    marginTop: 8,
+  },
+  clearButton: {
+    padding: 4,
+  },
+  clearButtonText: {
+    color: "#666",
+    fontSize: 16,
+  },
+  draftPicker: {
+    marginTop: 12,
+    padding: 8,
+    backgroundColor: "#fff",
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "#ddd",
+  },
+  draftOption: {
+    paddingVertical: 6,
+    paddingHorizontal: 8,
+  },
+  draftName: {
+    fontSize: 12,
+    color: "#333",
+  },
 });

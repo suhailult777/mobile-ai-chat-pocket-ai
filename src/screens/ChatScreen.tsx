@@ -18,6 +18,8 @@ import {
   LayoutAnimation,
   UIManager,
   StatusBar,
+  AppState,
+  type AppStateStatus,
 } from "react-native";
 import { FlashList, type FlashListRef } from "@shopify/flash-list";
 import * as Haptics from "expo-haptics";
@@ -40,7 +42,12 @@ import {
   pingProvider,
   getModelsProvider,
   prewarmProvider,
+  disposeProvider,
 } from "../lib/providerRouter";
+import { useStreamingText } from "../hooks/useStreamingText";
+import { useThrottledCallback } from "../hooks/useThrottledCallback";
+import { StreamingBubble } from "../components/StreamingBubble";
+import { SkeletonBubble } from "../components/SkeletonBubble";
 
 if (
   Platform.OS === "android" &&
@@ -63,45 +70,21 @@ const COLORS = {
   border: "#444746",
 };
 
+// Pre-computed styles for FlashList optimization (avoid inline objects)
+const FLASH_LIST_CONTENT_STYLE = { padding: 16, paddingBottom: 120 };
+
 // --- Components ---
 
-const ThinkingIndicator = () => {
-  const scale = useSharedValue(1);
-
-  useEffect(() => {
-    scale.value = withRepeat(
-      withSequence(
-        withTiming(1.2, { duration: 600, easing: Easing.ease }),
-        withTiming(1, { duration: 600, easing: Easing.ease }),
-      ),
-      -1,
-      true,
-    );
-  }, []);
-
-  const animatedStyle = useAnimatedStyle(() => ({
-    transform: [{ scale: scale.value }],
-  }));
-
-  return (
-    <View style={styles.thinkingContainer}>
-      <Animated.View style={[styles.thinkingDot, animatedStyle]} />
-      <Text style={styles.thinkingText}>Generating...</Text>
-    </View>
-  );
-};
-
-type BubbleProps = {
+// Static message bubble - only re-renders when content changes
+type StaticBubbleProps = {
   role: ChatMessage["role"];
   content: string;
-  isStreaming: boolean;
 };
 
-const MessageBubble = React.memo(function MessageBubble({
+const StaticMessageBubble = React.memo(function StaticMessageBubble({
   role,
   content,
-  isStreaming,
-}: BubbleProps) {
+}: StaticBubbleProps) {
   const isUser = role === "user";
 
   return (
@@ -119,16 +102,46 @@ const MessageBubble = React.memo(function MessageBubble({
           isUser ? styles.bubbleUser : styles.bubbleAssistant,
         ]}
       >
-        <Text style={styles.bubbleText}>
-          {content || (role === "assistant" && isStreaming ? "" : "")}
-        </Text>
-        {role === "assistant" && isStreaming && !content && (
-          <ThinkingIndicator />
-        )}
+        <Text style={styles.bubbleText}>{content}</Text>
       </View>
     </View>
   );
 });
+
+// List Footer for streaming content
+const ChatListFooter = React.memo(function ChatListFooter({
+  showSkeleton,
+  isStreaming,
+  streamingHandle,
+}: {
+  showSkeleton: boolean;
+  isStreaming: boolean;
+  streamingHandle: ReturnType<typeof useStreamingText>;
+}) {
+  if (showSkeleton) {
+    return (
+      <View style={{ paddingBottom: 16 }}>
+        <SkeletonBubble lines={2} />
+      </View>
+    );
+  }
+
+  if (isStreaming) {
+    return (
+      <View style={{ paddingBottom: 16 }}>
+        <StreamingBubble
+          streamingHandle={streamingHandle}
+          isStreaming={isStreaming}
+        />
+      </View>
+    );
+  }
+
+  return null;
+});
+
+// Prewarm status type
+type PrewarmStatus = "idle" | "warming" | "ready" | "error";
 
 export default function ChatScreen() {
   const insets = useSafeAreaInsets();
@@ -145,13 +158,37 @@ export default function ChatScreen() {
   const [error, setError] = useState<string | null>(null);
   const [models, setModels] = useState<string[]>([]);
   const [showModels, setShowModels] = useState(false);
+  const [prewarmStatus, setPrewarmStatus] = useState<PrewarmStatus>("idle");
+  const [showSkeleton, setShowSkeleton] = useState(false);
 
   const listRef = useRef<FlashListRef<UIMessage>>(null);
   const streamRef = useRef<{ cancel: () => void } | null>(null);
-  const tokenBufferRef = useRef<string>("");
-  const flushTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const nearBottomRef = useRef<boolean>(true);
   const nextIdRef = useRef<number>(1);
+  const appStateRef = useRef<AppStateStatus>(AppState.currentState);
+  const backgroundTimeRef = useRef<number | null>(null);
+
+  // Streaming text handle for optimized token rendering
+  const streamingHandle = useStreamingText();
+
+  // Input debouncing refs
+  const inputRef = useRef("");
+  const inputDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Debounced input handler
+  const handleInputChange = useCallback((text: string) => {
+    inputRef.current = text;
+
+    // Immediate visual update for responsiveness
+    if (inputDebounceRef.current) {
+      clearTimeout(inputDebounceRef.current);
+    }
+
+    // Debounce state update to reduce re-renders
+    inputDebounceRef.current = setTimeout(() => {
+      setInput(text);
+    }, 50); // Short debounce for typing feel
+  }, []);
 
   const toChatMessage = useCallback((m: UIMessage): ChatMessage => {
     return { role: m.role, content: m.content };
@@ -165,121 +202,151 @@ export default function ChatScreen() {
     [],
   );
 
-  const truncateHistory = useCallback(
-    (history: ChatMessage[]) => {
-      // Simple, safe truncation: keep the most recent messages within both a count and character budget.
-      const maxMessages = 40;
-      const maxChars = 12000;
+  const truncateHistory = useCallback((history: ChatMessage[]) => {
+    // Simple, safe truncation: keep the most recent messages within both a count and character budget.
+    const maxMessages = 40;
+    const maxChars = 12000;
 
-      const system = history.filter((m) => m.role === "system");
-      const nonSystem = history.filter((m) => m.role !== "system");
-      const tail = nonSystem.slice(Math.max(0, nonSystem.length - maxMessages));
+    const system = history.filter((m) => m.role === "system");
+    const nonSystem = history.filter((m) => m.role !== "system");
+    const tail = nonSystem.slice(Math.max(0, nonSystem.length - maxMessages));
 
-      let total = 0;
-      const trimmed: ChatMessage[] = [];
-      for (let i = tail.length - 1; i >= 0; i--) {
-        const m = tail[i];
-        const cost = m.content.length;
-        if (trimmed.length > 0 && total + cost > maxChars) break;
-        total += cost;
-        trimmed.push(m);
-      }
+    let total = 0;
+    const trimmed: ChatMessage[] = [];
+    for (let i = tail.length - 1; i >= 0; i--) {
+      const m = tail[i];
+      const cost = m.content.length;
+      if (trimmed.length > 0 && total + cost > maxChars) break;
+      total += cost;
+      trimmed.push(m);
+    }
 
-      trimmed.reverse();
-      return system.length ? [...system.slice(-1), ...trimmed] : trimmed;
-    },
-    [],
-  );
+    trimmed.reverse();
+    return system.length ? [...system.slice(-1), ...trimmed] : trimmed;
+  }, []);
 
   useEffect(() => {
     // Warm native context early to reduce TTFT when user enters chat directly.
-    if (settings.mode !== "native") return;
-    if (!settings.model?.startsWith("file://")) return;
-    prewarmProvider({ mode: settings.mode, model: settings.model }).catch(() => {
-      // best-effort
-    });
+    if (settings.mode !== "native") {
+      setPrewarmStatus("ready");
+      return;
+    }
+    if (!settings.model?.startsWith("file://")) {
+      setPrewarmStatus("ready");
+      return;
+    }
+
+    setPrewarmStatus("warming");
+    prewarmProvider({ mode: settings.mode, model: settings.model })
+      .then(() => setPrewarmStatus("ready"))
+      .catch(() => setPrewarmStatus("error"));
   }, [settings.mode, settings.model]);
 
-  // --- Scroll Logic ---
-  const handleScroll = (e: any) => {
-    // Basic near-bottom detection
+  // AppState listener for background context management
+  useEffect(() => {
+    const handleAppStateChange = (nextState: AppStateStatus) => {
+      const prevState = appStateRef.current;
+      appStateRef.current = nextState;
+
+      if (prevState === "active" && nextState.match(/inactive|background/)) {
+        // App going to background - record time
+        backgroundTimeRef.current = Date.now();
+      } else if (
+        prevState.match(/inactive|background/) &&
+        nextState === "active"
+      ) {
+        // App coming to foreground
+        const backgroundTime = backgroundTimeRef.current;
+        backgroundTimeRef.current = null;
+
+        // If backgrounded for more than 5 minutes, context may be stale
+        const FIVE_MINUTES = 5 * 60 * 1000;
+        if (backgroundTime && Date.now() - backgroundTime > FIVE_MINUTES) {
+          // Dispose and rewarm context
+          if (
+            settings.mode === "native" &&
+            settings.model?.startsWith("file://")
+          ) {
+            setPrewarmStatus("warming");
+            disposeProvider({ mode: settings.mode })
+              .then(() =>
+                prewarmProvider({ mode: settings.mode, model: settings.model }),
+              )
+              .then(() => setPrewarmStatus("ready"))
+              .catch(() => setPrewarmStatus("error"));
+          }
+        } else if (
+          settings.mode === "native" &&
+          settings.model?.startsWith("file://")
+        ) {
+          // Quick prewarm on return from short background
+          prewarmProvider({ mode: settings.mode, model: settings.model }).catch(
+            () => {},
+          );
+        }
+      }
+    };
+
+    const subscription = AppState.addEventListener(
+      "change",
+      handleAppStateChange,
+    );
+    return () => subscription?.remove();
+  }, [settings.mode, settings.model]);
+
+  // --- Scroll Logic (throttled) ---
+  const handleScrollRaw = useCallback((e: any) => {
     const { contentOffset, layoutMeasurement, contentSize } = e.nativeEvent;
     const paddingToBottom = 100;
     nearBottomRef.current =
       layoutMeasurement.height + contentOffset.y >=
       contentSize.height - paddingToBottom;
-  };
+  }, []);
 
-  // --- Streaming Logic ---
-  const startFlushLoop = () => {
-    if (flushTimerRef.current) return;
-    flushTimerRef.current = setInterval(() => {
-      const buf = tokenBufferRef.current;
-      if (!buf) return;
-      tokenBufferRef.current = "";
+  const handleScroll = useThrottledCallback(handleScrollRaw, 100);
 
-      setMessages((prev) => {
-        const next = [...prev];
-        const lastIdx = next.length - 1;
-        if (lastIdx >= 0 && next[lastIdx].role === "assistant") {
-          next[lastIdx] = {
-            ...next[lastIdx],
-            content: next[lastIdx].content + buf,
-          };
-        }
-        return next;
-      });
-
-      // Haptics on significant chunks (optional, kept subtle)
-      // Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-
-      // Auto-scroll logic
-      if (nearBottomRef.current) {
-        listRef.current?.scrollToEnd({ animated: false }); // False for smoother stream performance
-      }
-    }, 50); // 20 FPS flush for UI smoothness
-  };
-
-  const stopFlushLoop = (kind: "done" | "error" | "cancel") => {
-    if (flushTimerRef.current) {
-      clearInterval(flushTimerRef.current);
-      flushTimerRef.current = null;
+  // Auto-scroll during streaming
+  const scrollToEnd = useCallback(() => {
+    if (nearBottomRef.current) {
+      listRef.current?.scrollToEnd({ animated: false });
     }
-    const remaining = tokenBufferRef.current;
-    if (remaining) {
-      tokenBufferRef.current = "";
-      setMessages((prev) => {
-        const next = [...prev];
-        const lastIdx = next.length - 1;
-        if (lastIdx >= 0 && next[lastIdx].role === "assistant") {
-          next[lastIdx] = {
-            ...next[lastIdx],
-            content: next[lastIdx].content + remaining,
-          };
-        }
-        return next;
-      });
-    }
-    if (kind === "done") {
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-    } else if (kind === "cancel") {
-      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    }
-  };
+  }, []);
+
+  // Subscribe to streaming text for auto-scroll
+  useEffect(() => {
+    if (!isStreaming) return;
+
+    const unsubscribe = streamingHandle.subscribe(() => {
+      scrollToEnd();
+    });
+
+    return unsubscribe;
+  }, [isStreaming, streamingHandle, scrollToEnd]);
 
   // --- Send / Stop ---
   const send = useCallback(async () => {
-    if (!input.trim() || isStreaming) return;
+    const currentInput = inputRef.current.trim() || input.trim();
+    if (!currentInput || isStreaming) return;
+
+    // Block if prewarm not ready in native mode
+    if (settings.mode === "native" && prewarmStatus === "warming") {
+      setError("Model is still loading. Please wait...");
+      return;
+    }
+
     setError(null);
     Keyboard.dismiss();
 
-    const userMsg = makeMessage("user", input.trim());
-    const assistantMsg = makeMessage("assistant", "");
+    const userMsg = makeMessage("user", currentInput);
     const historyUI = messages.concat(userMsg);
     const history = truncateHistory(historyUI.map(toChatMessage));
 
-    setMessages([...historyUI, assistantMsg]);
+    setMessages(historyUI);
     setInput("");
+    inputRef.current = "";
+
+    // Show skeleton while waiting for first token
+    setShowSkeleton(true);
 
     // Animate list update
     LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
@@ -300,39 +367,83 @@ export default function ChatScreen() {
       }
     } catch (e: any) {
       setError(e.message);
+      setShowSkeleton(false);
       return;
     }
 
     setIsStreaming(true);
-    tokenBufferRef.current = "";
-    startFlushLoop();
+    streamingHandle.clear();
+    let firstTokenReceived = false;
 
     const handle = streamProvider({
       mode: settings.mode,
       baseUrl,
       model: settings.model,
       messages: history,
+      turboMode: settings.turboMode,
+      draftModel: settings.draftModel,
       onToken: (t) => {
-        tokenBufferRef.current += t;
+        if (!firstTokenReceived) {
+          firstTokenReceived = true;
+          setShowSkeleton(false);
+        }
+        streamingHandle.append(t);
       },
       onError: (e) => {
         setError(String(e?.message || e));
         setIsStreaming(false);
-        stopFlushLoop("error");
+        setShowSkeleton(false);
+        // Commit any partial content to messages
+        const partialContent = streamingHandle.getText();
+        if (partialContent) {
+          const assistantMsg = makeMessage("assistant", partialContent);
+          setMessages((prev) => [...prev, assistantMsg]);
+        }
+        streamingHandle.clear();
       },
       onDone: () => {
+        // Commit final content to messages
+        const finalContent = streamingHandle.getText();
+        if (finalContent) {
+          const assistantMsg = makeMessage("assistant", finalContent);
+          setMessages((prev) => [...prev, assistantMsg]);
+        }
         setIsStreaming(false);
-        stopFlushLoop("done");
+        setShowSkeleton(false);
+        streamingHandle.clear();
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       },
     });
     streamRef.current = handle;
-  }, [input, isStreaming, settings.mode, baseUrl, settings.model, messages]);
+  }, [
+    input,
+    isStreaming,
+    settings.mode,
+    settings.turboMode,
+    settings.draftModel,
+    baseUrl,
+    settings.model,
+    messages,
+    prewarmStatus,
+    streamingHandle,
+    makeMessage,
+    truncateHistory,
+    toChatMessage,
+  ]);
 
   const stop = useCallback(() => {
     streamRef.current?.cancel();
+    // Commit any partial content
+    const partialContent = streamingHandle.getText();
+    if (partialContent) {
+      const assistantMsg = makeMessage("assistant", partialContent);
+      setMessages((prev) => [...prev, assistantMsg]);
+    }
     setIsStreaming(false);
-    stopFlushLoop("cancel");
-  }, []);
+    setShowSkeleton(false);
+    streamingHandle.clear();
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+  }, [streamingHandle, makeMessage]);
 
   // --- Model Toggles ---
   const toggleModels = useCallback(async () => {
@@ -413,18 +524,26 @@ export default function ChatScreen() {
           {models.length === 0 ? (
             <Text style={{ color: "#666", padding: 10 }}>Loading...</Text>
           ) : (
-            models.map((m) => (
-              <TouchableOpacity
-                key={m}
-                onPress={() => chooseModel(m)}
-                style={styles.modelOption}
-              >
-                <Text style={{ color: COLORS.textPrimary }}>{m}</Text>
-                {m === settings.model && (
-                  <Ionicons name="checkmark" size={16} color={COLORS.accent} />
-                )}
-              </TouchableOpacity>
-            ))
+            <FlashList
+              data={models}
+              renderItem={({ item: m }) => (
+                <TouchableOpacity
+                  onPress={() => chooseModel(m)}
+                  style={styles.modelOption}
+                >
+                  <Text style={{ color: COLORS.textPrimary }}>{m}</Text>
+                  {m === settings.model && (
+                    <Ionicons
+                      name="checkmark"
+                      size={16}
+                      color={COLORS.accent}
+                    />
+                  )}
+                </TouchableOpacity>
+              )}
+              keyExtractor={(item) => item}
+              contentContainerStyle={{ paddingVertical: 4 }}
+            />
           )}
         </View>
       )}
@@ -434,18 +553,22 @@ export default function ChatScreen() {
         ref={listRef}
         data={messages}
         renderItem={({ item }) => (
-          <MessageBubble
-            role={item.role}
-            content={item.content}
-            isStreaming={isStreaming}
-          />
+          <StaticMessageBubble role={item.role} content={item.content} />
         )}
         keyExtractor={(item) => item.id}
         getItemType={(item) => item.role}
-        contentContainerStyle={{ padding: 16, paddingBottom: 120 }}
+        contentContainerStyle={FLASH_LIST_CONTENT_STYLE}
         keyboardDismissMode="on-drag"
         onScroll={handleScroll}
+        scrollEventThrottle={100}
         keyboardShouldPersistTaps="handled"
+        ListFooterComponent={
+          <ChatListFooter
+            showSkeleton={showSkeleton}
+            isStreaming={isStreaming}
+            streamingHandle={streamingHandle}
+          />
+        }
       />
 
       {/* Error Banner */}
@@ -474,11 +597,16 @@ export default function ChatScreen() {
           <TextInput
             style={styles.textInput}
             value={input}
-            onChangeText={setInput}
-            placeholder="Ask anything..."
+            onChangeText={handleInputChange}
+            placeholder={
+              prewarmStatus === "warming"
+                ? "Loading model..."
+                : "Ask anything..."
+            }
             placeholderTextColor={COLORS.textSecondary}
             multiline
             cursorColor={COLORS.accent}
+            editable={prewarmStatus !== "warming"}
           />
 
           <TouchableOpacity
@@ -576,8 +704,8 @@ const styles = StyleSheet.create({
     borderTopRightRadius: 4,
   },
   bubbleAssistant: {
-    backgroundColor: "transparent",
-    marginLeft: -10, // Slight visual offset to align with edge
+    backgroundColor: "#2D2E30", // Match user bubble for now, robust design
+    borderBottomLeftRadius: 4,
   },
   bubbleText: {
     color: COLORS.textPrimary,
@@ -599,6 +727,9 @@ const styles = StyleSheet.create({
   thinkingText: {
     color: COLORS.textSecondary,
     fontSize: 12,
+  },
+  streamingContainer: {
+    // Removed absolute positioning as it's now in FlaskList Footer
   },
 
   inputWrapper: {

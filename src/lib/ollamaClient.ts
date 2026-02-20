@@ -30,6 +30,9 @@ export type StreamOptions = {
 
 export type StreamHandle = { cancel: () => void };
 
+// Default timeout for HTTP requests (10 seconds)
+const HTTP_TIMEOUT_MS = 10000;
+
 export function streamChat(opts: StreamOptions): StreamHandle {
   const url = normalizeUrl(opts.baseUrl) + "/api/chat";
   const defaultStop: string[] = ["</s>", "<|eot_id|>"];
@@ -111,6 +114,14 @@ export function streamChat(opts: StreamOptions): StreamHandle {
 
   xhr.open("POST", url, true);
   xhr.setRequestHeader("Content-Type", "application/json");
+  xhr.timeout = HTTP_TIMEOUT_MS;
+  xhr.ontimeout = () =>
+    opts.onError &&
+    opts.onError(
+      new Error(
+        "Request timed out. Check if Ollama is running and accessible.",
+      ),
+    );
   xhr.onreadystatechange = () => {
     // readyState 3 (LOADING) and 4 (DONE)
     if (xhr.readyState === 3) parseNew(false);
@@ -131,7 +142,7 @@ export async function getModels(baseUrl: string): Promise<string[]> {
       const res = await fetch(normalizeUrl(baseUrl) + path);
       if (!res.ok) {
         lastErr = new Error(
-          `Failed to fetch models from ${path}: ${res.status}`
+          `Failed to fetch models from ${path}: ${res.status}`,
         );
         continue;
       }

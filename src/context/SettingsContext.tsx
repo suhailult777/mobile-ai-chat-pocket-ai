@@ -6,6 +6,9 @@ export type Settings = {
   port: string;
   model: string;
   mode: "remote" | "native";
+  // Speculative decoding settings (Phase 6)
+  turboMode: boolean;
+  draftModel: string; // file:// path to smaller GGUF model for speculation
 };
 
 export const defaultSettings: Settings = {
@@ -13,6 +16,8 @@ export const defaultSettings: Settings = {
   port: "11434",
   model: "tinyllama:latest",
   mode: "remote",
+  turboMode: false,
+  draftModel: "",
 };
 
 export const SettingsContext = React.createContext<{
@@ -26,17 +31,22 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     (async () => {
       try {
-        const [host, port, model, mode] = await Promise.all([
-          SecureStore.getItemAsync("host"),
-          SecureStore.getItemAsync("port"),
-          SecureStore.getItemAsync("model"),
-          SecureStore.getItemAsync("mode"),
-        ]);
+        const [host, port, model, mode, turboMode, draftModel] =
+          await Promise.all([
+            SecureStore.getItemAsync("host"),
+            SecureStore.getItemAsync("port"),
+            SecureStore.getItemAsync("model"),
+            SecureStore.getItemAsync("mode"),
+            SecureStore.getItemAsync("turboMode"),
+            SecureStore.getItemAsync("draftModel"),
+          ]);
         setSettings({
           host: host || defaultSettings.host,
           port: port || defaultSettings.port,
           model: model || defaultSettings.model,
           mode: (mode as Settings["mode"]) || defaultSettings.mode,
+          turboMode: turboMode === "true",
+          draftModel: draftModel || defaultSettings.draftModel,
         });
       } catch (e) {
         console.warn("Failed to load settings", e);
@@ -57,12 +67,15 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
           await SecureStore.setItemAsync("model", next.model);
         if (partial.mode !== undefined)
           await SecureStore.setItemAsync("mode", next.mode);
-        // No advanced native settings persisted; use smart defaults automatically
+        if (partial.turboMode !== undefined)
+          await SecureStore.setItemAsync("turboMode", String(next.turboMode));
+        if (partial.draftModel !== undefined)
+          await SecureStore.setItemAsync("draftModel", next.draftModel);
       } catch (e) {
         console.warn("Failed to save settings", e);
       }
     },
-    [settings]
+    [settings],
   );
 
   return (
