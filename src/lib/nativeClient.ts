@@ -1,9 +1,20 @@
 import { NativeEventEmitter, NativeModules } from "react-native";
 import { File } from "expo-file-system/next";
 import type { ChatMessage, StreamHandle } from "./ollamaClient";
+import {
+  TOOL_SYSTEM_PROMPT,
+  parseToolCall,
+  executeWebSearch,
+  executeFetchPage,
+} from "./toolExecutor";
 
 type StreamCallbacks = {
   onToken: (t: string) => void;
+  onMeta?: (meta: {
+    requestedModel?: string;
+    selectedModel?: string;
+    fallbackUsed?: boolean;
+  }) => void;
   onError?: (e: any) => void;
   onDone?: () => void;
 };
@@ -34,8 +45,10 @@ async function getLlamaRn(): Promise<any | null> {
 // Cache a single initialized llama context per model path to avoid re-initializing
 // on every message. This dramatically reduces cold-start latency in Native mode.
 let cachedModelPath: string | null = null;
+let cachedContextNctx = 512;
 let cachedContext: any | null = null;
 let contextInitPromise: Promise<any> | null = null;
+let contextInitKey: string | null = null;
 let parallelEnabledForContext: WeakSet<any> = new WeakSet();
 
 // KV-cache state persistence for conversation continuity
@@ -51,10 +64,18 @@ let draftContextInitPromise: Promise<any> | null = null;
 const SPECULATION_TOKENS = 4; // Number of tokens to speculate ahead
 const SPECULATION_BATCH_SIZE = 128;
 
-async function ensureContext(modelPath: string) {
-  if (cachedContext && cachedModelPath === modelPath) return cachedContext;
-  if (contextInitPromise && cachedModelPath === modelPath)
+async function ensureContext(modelPath: string, nCtx = 512) {
+  const cacheKey = `${modelPath}::${nCtx}`;
+  if (
+    cachedContext &&
+    cachedModelPath === modelPath &&
+    cachedContextNctx === nCtx
+  )
+    return cachedContext;
+  if (contextInitPromise && contextInitKey === cacheKey)
     return contextInitPromise;
+
+  contextInitKey = cacheKey;
 
   contextInitPromise = (async () => {
     const lrn = await getLlamaRn();
@@ -85,8 +106,12 @@ async function ensureContext(modelPath: string) {
       await loadLlamaModelInfo(filePath);
     }
 
-    // Dispose previous context if switching models (if dispose exists)
-    if (cachedContext && cachedModelPath && cachedModelPath !== modelPath) {
+    // Dispose previous context if switching models or context size (if dispose exists)
+    if (
+      cachedContext &&
+      ((cachedModelPath && cachedModelPath !== modelPath) ||
+        cachedContextNctx !== nCtx)
+    ) {
       try {
         cachedContext.dispose?.();
       } catch {}
@@ -101,7 +126,7 @@ async function ensureContext(modelPath: string) {
     try {
       ctx = await initLlama({
         model: modelPath,
-        n_ctx: 512,
+        n_ctx: nCtx,
         n_gpu_layers: 99, // offload as many layers as possible
         n_parallel: 2,
         use_mlock: false,
@@ -112,7 +137,7 @@ async function ensureContext(modelPath: string) {
       // Retry with CPU-only
       ctx = await initLlama({
         model: modelPath,
-        n_ctx: 512,
+        n_ctx: nCtx,
         n_gpu_layers: 0,
         n_parallel: 2,
         use_mlock: false,
@@ -121,6 +146,7 @@ async function ensureContext(modelPath: string) {
 
     cachedContext = ctx;
     cachedModelPath = modelPath;
+    cachedContextNctx = nCtx;
 
     // Enable parallel mode once to allow cancellable requests
     try {
@@ -139,6 +165,7 @@ async function ensureContext(modelPath: string) {
     return ctx;
   } finally {
     contextInitPromise = null; // allow future re-init attempts if needed
+    contextInitKey = null;
   }
 }
 
@@ -349,6 +376,7 @@ export function streamNative(
   opts: {
     model: string;
     messages: ChatMessage[];
+    agentMode?: boolean;
     turboMode?: boolean;
     draftModel?: string;
   } & StreamCallbacks,
@@ -407,7 +435,15 @@ export function streamNative(
           "In Native mode, set Settings → Model to a file:// path for a GGUF model",
         );
       }
-      const context = await ensureContext(modelPath);
+      const nCtx = opts.agentMode ? 2048 : 512;
+      const context = await ensureContext(modelPath, nCtx);
+
+      const selectedModel = modelPath.split("/").pop() || modelPath;
+      opts.onMeta?.({
+        requestedModel: selectedModel,
+        selectedModel,
+        fallbackUsed: false,
+      });
 
       // Common stop tokens from llama.cpp examples
       // Use a minimal, safer set of stop tokens to avoid premature endings on some models
@@ -419,7 +455,10 @@ export function streamNative(
 
       // Check if speculative decoding is enabled and draft model is available
       const useTurbo =
-        opts.turboMode && opts.draftModel && /^file:\/\//.test(opts.draftModel);
+        !opts.agentMode &&
+        opts.turboMode &&
+        opts.draftModel &&
+        /^file:\/\//.test(opts.draftModel);
       let draftCtx: any | null = null;
 
       if (useTurbo) {
@@ -440,6 +479,96 @@ export function streamNative(
           },
           () => canceled || !active,
         );
+
+        if (!active) return;
+        if (!canceled && !stopped) {
+          await saveKvState(context, messageCount + 1);
+          opts.onDone && opts.onDone();
+        }
+        return;
+      }
+
+      if (opts.agentMode) {
+        const maxAgentLoops = 4;
+        let workingMessages: ChatMessage[] = [
+          { role: "system", content: TOOL_SYSTEM_PROMPT },
+          ...opts.messages,
+        ];
+
+        for (let loop = 0; loop < maxAgentLoops; loop++) {
+          if (!active || canceled) return;
+
+          let result: any = null;
+          let loopEmittedText = "";
+
+          result = await context.completion(
+            {
+              messages: workingMessages,
+              n_predict: 1024,
+              n_batch: 256,
+              stop: stopWords,
+            },
+            (data: any) => {
+              if (!active || canceled) return;
+              const t = data?.token ?? data?.content ?? "";
+              if (t) {
+                emittedText += t;
+                loopEmittedText += t;
+                opts.onToken(t);
+              }
+            },
+          );
+
+          if (!active || canceled) return;
+
+          const tail = (result as any)?.text ?? "";
+          if (tail) {
+            const remaining = tail.startsWith(loopEmittedText)
+              ? tail.slice(loopEmittedText.length)
+              : tail.slice(loopEmittedText.length);
+            if (remaining) {
+              emittedText += remaining;
+              loopEmittedText += remaining;
+              opts.onToken(remaining);
+            }
+          }
+
+          const toolCall = parseToolCall(loopEmittedText);
+          if (!toolCall) {
+            break;
+          }
+
+          if (!active || canceled) return;
+
+          opts.onToken(`\n\nTool Call • ${toolCall.name}\n`);
+          let toolResult = "";
+          try {
+            if (toolCall.name === "web_search") {
+              toolResult = await executeWebSearch(
+                String(toolCall.arguments?.query ?? ""),
+                Number(toolCall.arguments?.max_results ?? 5),
+              );
+            } else {
+              toolResult = await executeFetchPage(
+                String(toolCall.arguments?.url ?? ""),
+                typeof toolCall.arguments?.focus === "string"
+                  ? toolCall.arguments.focus
+                  : undefined,
+              );
+            }
+          } catch (toolErr: any) {
+            toolResult = `tool execution error: ${toolErr?.message || toolErr}`;
+          }
+
+          workingMessages = [
+            ...workingMessages,
+            { role: "assistant", content: loopEmittedText },
+            {
+              role: "system",
+              content: `Tool result (${toolCall.name}):\n${toolResult}`,
+            },
+          ];
+        }
 
         if (!active) return;
         if (!canceled && !stopped) {
@@ -617,6 +746,8 @@ export async function disposeNative(): Promise<void> {
     cachedKvState = null;
     kvStateMessageCount = 0;
     contextInitPromise = null;
+    cachedContextNctx = 512;
+    contextInitKey = null;
   }
 }
 

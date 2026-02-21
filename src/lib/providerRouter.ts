@@ -68,7 +68,9 @@ export function streamProvider(opts: {
     handle = streamNative({
       model: opts.model,
       messages: opts.messages,
+      agentMode: opts.agentMode,
       onToken: opts.onToken,
+      onMeta: opts.onMeta,
       turboMode: opts.turboMode,
       draftModel: opts.draftModel,
       onError: (e) => {

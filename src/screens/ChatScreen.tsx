@@ -198,8 +198,10 @@ const ChatListFooter = React.memo(function ChatListFooter({
   const tokenCount = estimateTokenCount(streamingText);
   const activeToolName: string | null = (() => {
     if (!agentMode || !isStreaming) return null;
-    if (/fetch_page\s*\(|"fetch_page"|fetch_page/i.test(streamingText)) return "fetch_page";
-    if (/<tool_call>|web_search\s*\(|web_search/i.test(streamingText)) return "web_search";
+    if (/fetch_page\s*\(|"fetch_page"|fetch_page/i.test(streamingText))
+      return "fetch_page";
+    if (/<tool_call>|web_search\s*\(|web_search/i.test(streamingText))
+      return "web_search";
     return null;
   })();
   const isToolCallActive = activeToolName !== null;

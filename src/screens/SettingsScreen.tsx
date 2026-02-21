@@ -192,24 +192,23 @@ export default function SettingsScreen() {
           placeholder="z-ai/glm5"
         />
 
-        {mode !== "native" && (
-          <View style={styles.turboSection}>
-            <View style={styles.turboHeader}>
-              <View>
-                <Text style={styles.sectionTitle}>Agent Mode (Scaffold)</Text>
-                <Text style={styles.hintSmall}>
-                  Sends tool-calling schema to proxy for GLM-5 agent workflows.
-                </Text>
-              </View>
-              <Switch
-                value={agentMode}
-                onValueChange={setAgentMode}
-                trackColor={{ false: "#767577", true: "#81b0ff" }}
-                thumbColor={agentMode ? "#007AFF" : "#f4f3f4"}
-              />
+        <View style={styles.turboSection}>
+          <View style={styles.turboHeader}>
+            <View>
+              <Text style={styles.sectionTitle}>Agent Mode (Scaffold)</Text>
+              <Text style={styles.hintSmall}>
+                Enables web_search/fetch_page tool workflows (proxy mode now,
+                native GGUF support experimental).
+              </Text>
             </View>
+            <Switch
+              value={agentMode}
+              onValueChange={setAgentMode}
+              trackColor={{ false: "#767577", true: "#81b0ff" }}
+              thumbColor={agentMode ? "#007AFF" : "#f4f3f4"}
+            />
           </View>
-        )}
+        </View>
 
         <View style={styles.row}>
           <TouchableOpacity onPress={onSave} style={styles.button}>
