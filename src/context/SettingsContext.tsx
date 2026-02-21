@@ -5,7 +5,8 @@ export type Settings = {
   host: string;
   port: string;
   model: string;
-  mode: "remote" | "native";
+  mode: "nvidia-proxy" | "native";
+  agentMode: boolean;
   // Speculative decoding settings (Phase 6)
   turboMode: boolean;
   draftModel: string; // file:// path to smaller GGUF model for speculation
@@ -13,9 +14,10 @@ export type Settings = {
 
 export const defaultSettings: Settings = {
   host: "127.0.0.1",
-  port: "11434",
-  model: "tinyllama:latest",
-  mode: "remote",
+  port: "8787",
+  model: "nvidia/nemotron-3-nano-30b-a3b",
+  mode: "nvidia-proxy",
+  agentMode: true,
   turboMode: false,
   draftModel: "",
 };
@@ -31,20 +33,28 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     (async () => {
       try {
-        const [host, port, model, mode, turboMode, draftModel] =
+        const [host, port, model, mode, agentMode, turboMode, draftModel] =
           await Promise.all([
             SecureStore.getItemAsync("host"),
             SecureStore.getItemAsync("port"),
             SecureStore.getItemAsync("model"),
             SecureStore.getItemAsync("mode"),
+            SecureStore.getItemAsync("agentMode"),
             SecureStore.getItemAsync("turboMode"),
             SecureStore.getItemAsync("draftModel"),
           ]);
+        const normalizedMode: Settings["mode"] =
+          mode === "remote"
+            ? "nvidia-proxy"
+            : (mode as Settings["mode"]) || defaultSettings.mode;
         setSettings({
           host: host || defaultSettings.host,
           port: port || defaultSettings.port,
           model: model || defaultSettings.model,
-          mode: (mode as Settings["mode"]) || defaultSettings.mode,
+          mode: normalizedMode,
+          agentMode: agentMode
+            ? agentMode === "true"
+            : defaultSettings.agentMode,
           turboMode: turboMode === "true",
           draftModel: draftModel || defaultSettings.draftModel,
         });
@@ -67,6 +77,8 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
           await SecureStore.setItemAsync("model", next.model);
         if (partial.mode !== undefined)
           await SecureStore.setItemAsync("mode", next.mode);
+        if (partial.agentMode !== undefined)
+          await SecureStore.setItemAsync("agentMode", String(next.agentMode));
         if (partial.turboMode !== undefined)
           await SecureStore.setItemAsync("turboMode", String(next.turboMode));
         if (partial.draftModel !== undefined)

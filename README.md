@@ -2,7 +2,7 @@
 
 > **Chat with local LLMs on your phone over LAN or localhost**
 
-An Expo-managed React Native app for real-time chat with [Ollama](https://ollama.com) local language models. Built with **streaming tokens**, **flexible connection modes**, **GPU-accelerated inference**, and a **premium Gemini-inspired UI**.
+An Expo-managed React Native app for real-time chat with **NVIDIA NIM via a secure proxy** plus local native inference. Built with **streaming tokens**, **flexible connection modes**, **GPU-accelerated inference**, and a **premium Gemini-inspired UI**.
 
 🚀 **Quick start:** Run Ollama on your PC, scan a QR code, and chat instantly—no internet required.
 
@@ -11,10 +11,10 @@ An Expo-managed React Native app for real-time chat with [Ollama](https://ollama
 ### Core Capabilities
 
 - ⚡ **Streaming chat** with real-time token display and thinking indicators
-- 🔌 **Dual connection modes:** Remote HTTP (Expo Go) + Native on-device inference (llama.rn)
+- 🔌 **Dual connection modes:** NVIDIA Proxy (Expo Go) + Native on-device inference (llama.rn)
 - 🎯 **Model management** with GGUF import, browsing, and quick switching
 - 📱 **Android-first** with iOS support planned
-- 🛡️ **Fully local** — all data and models stay on device/LAN (zero external requests)
+- 🛡️ **Secure key handling** — mobile app uses proxy mode so NVIDIA API keys remain server-side
 
 ### Phase 4: Performance & Optimization (✅ Complete)
 
@@ -70,8 +70,8 @@ An Expo-managed React Native app for real-time chat with [Ollama](https://ollama
     ┌─────────▼─────────────────▼─────────┐
     │        Backend / Runtime             │
     │  ┌────────────┐    ┌──────────────┐ │
-    │  │ Ollama API │    │ llama.cpp    │ │
-    │  │ (HTTP/LAN) │    │ (on-device)  │ │
+    │  │ NVIDIA NIM │    │ llama.cpp    │ │
+    │  │ (via proxy)│    │ (on-device)  │ │
     │  └────────────┘    └──────────────┘ │
     └──────────────────────────────────────┘
 ```
@@ -87,7 +87,7 @@ User Input
     │       ↓
     ├─► [3] Optimistic UI Update (instant user bubble)
     │       ↓
-    ├─► [4] Call streamProvider() ──┬─► Remote Mode: XMLHttpRequest → Ollama /api/chat
+    ├─► [4] Call streamProvider() ──┬─► Proxy Mode: XMLHttpRequest → NVIDIA proxy /v1/chat/completions
     │                                └─► Native Mode: llama.rn → cached context
     │       ↓
     ├─► [5] Token Streaming
@@ -144,7 +144,7 @@ User Input
 **Key principles:**
 
 - **Separation of concerns:** UI → Router → Clients → Backend
-- **Mode switching:** No UI code changes when toggling Remote ↔ Native
+- **Mode switching:** No UI code changes when toggling NVIDIA Proxy ↔ Native
 - **Caching strategy:** Context reuse prevents repeated model loads
 - **Graceful degradation:** GPU → CPU fallback, parallel → single completion
 
@@ -153,7 +153,7 @@ User Input
 ### Prerequisites
 
 - **Node.js** (LTS 18+) and **pnpm** (or npm/yarn)
-- **Ollama** running on your PC: https://ollama.com
+- **NVIDIA proxy backend** running on your PC/server/LAN
 - **Android device** with Expo Go (or emulator with `10.0.2.2:11434` routing)
 
 ### Step 1: Clone and install
@@ -168,6 +168,15 @@ pnpm install
 
 ```powershell
 pnpm start
+```
+
+### Step 2.5: Start NVIDIA proxy service
+
+```powershell
+pnpm proxy:install
+copy server/.env.example server/.env
+# set NVIDIA_API_KEY in server/.env
+pnpm proxy:start
 ```
 
 ### Step 3: Open on device
@@ -192,24 +201,22 @@ pnpm start:dev
    - **Emulator:** `10.0.2.2` : `11434` (special Android emulator routing)
    - **Local device:** `127.0.0.1` : `11434` (if Ollama running on device)
 
-2. **Connection Mode:** Remote HTTP (default) or Native (requires dev client)
+2. **Connection Mode:** NVIDIA Proxy (default) or Native (requires dev client)
 
-3. **Tap Test** to verify connectivity, then **Fetch Models** to list available models
+3. **Tap Test** to verify proxy connectivity, then **Fetch Models** to list available models
 
 4. Go to **Chat** tab and send a message!
 
 ## Usage
 
-### Remote HTTP Mode (Phase 1)
+### NVIDIA Proxy Mode
 
-Works in Expo Go. Your phone connects to Ollama on a PC/server.
+Works in Expo Go. Your phone connects to your proxy service, and the proxy securely calls NVIDIA NIM.
 
 ```powershell
-# Install and run Ollama on your PC
-ollama serve
-
-# On phone Settings, set Connection Mode to "Remote HTTP"
-# Enter your PC's LAN IP and port 11434
+# On phone Settings, set Connection Mode to "NVIDIA Proxy"
+# Enter your proxy host and port (default app value is 127.0.0.1:8787)
+# Use model: z-ai/glm5
 ```
 
 **Why XHR and not fetch?**  

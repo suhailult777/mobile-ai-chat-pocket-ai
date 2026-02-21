@@ -6,6 +6,8 @@
   "scripts": {
     "start": "expo start",
     "start:dev": "expo start --dev-client",
+    "proxy:start": "pnpm --dir server start",
+    "proxy:install": "pnpm --dir server install",
     "android": "expo start --android",
     "ios": "expo start --ios",
     "web": "expo start --web",

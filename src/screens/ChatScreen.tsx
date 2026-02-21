@@ -29,6 +29,7 @@ import Animated, {
   withRepeat,
   withSequence,
   withTiming,
+  withDelay,
   Easing,
   FadeIn,
 } from "react-native-reanimated";
@@ -73,6 +74,12 @@ const COLORS = {
 // Pre-computed styles for FlashList optimization (avoid inline objects)
 const FLASH_LIST_CONTENT_STYLE = { padding: 16, paddingBottom: 120 };
 
+function estimateTokenCount(text: string): number {
+  const trimmed = text.trim();
+  if (!trimmed) return 0;
+  return Math.max(1, Math.round(trimmed.length / 4));
+}
+
 // --- Components ---
 
 // Static message bubble - only re-renders when content changes
@@ -108,19 +115,137 @@ const StaticMessageBubble = React.memo(function StaticMessageBubble({
   );
 });
 
+const GeneratingDots = React.memo(function GeneratingDots() {
+  const dot1 = useSharedValue(0.35);
+  const dot2 = useSharedValue(0.35);
+  const dot3 = useSharedValue(0.35);
+
+  useEffect(() => {
+    const pulse = () =>
+      withRepeat(
+        withSequence(
+          withTiming(1, {
+            duration: 420,
+            easing: Easing.inOut(Easing.ease),
+          }),
+          withTiming(0.35, {
+            duration: 420,
+            easing: Easing.inOut(Easing.ease),
+          }),
+        ),
+        -1,
+        false,
+      );
+
+    dot1.value = pulse();
+    dot2.value = withDelay(140, pulse());
+    dot3.value = withDelay(280, pulse());
+  }, [dot1, dot2, dot3]);
+
+  const dot1Style = useAnimatedStyle(() => ({
+    opacity: dot1.value,
+    transform: [{ scale: 0.8 + dot1.value * 0.3 }],
+  }));
+
+  const dot2Style = useAnimatedStyle(() => ({
+    opacity: dot2.value,
+    transform: [{ scale: 0.8 + dot2.value * 0.3 }],
+  }));
+
+  const dot3Style = useAnimatedStyle(() => ({
+    opacity: dot3.value,
+    transform: [{ scale: 0.8 + dot3.value * 0.3 }],
+  }));
+
+  return (
+    <View style={styles.generatingDots}>
+      <Animated.View style={[styles.generatingDot, dot1Style]} />
+      <Animated.View style={[styles.generatingDot, dot2Style]} />
+      <Animated.View style={[styles.generatingDot, dot3Style]} />
+    </View>
+  );
+});
+
 // List Footer for streaming content
 const ChatListFooter = React.memo(function ChatListFooter({
   showSkeleton,
   isStreaming,
+  agentMode,
+  selectedModel,
+  fallbackUsed,
   streamingHandle,
 }: {
   showSkeleton: boolean;
   isStreaming: boolean;
+  agentMode: boolean;
+  selectedModel: string | null;
+  fallbackUsed: boolean;
   streamingHandle: ReturnType<typeof useStreamingText>;
 }) {
+  const [streamingText, setStreamingText] = useState("");
+
+  useEffect(() => {
+    if (!isStreaming) {
+      setStreamingText("");
+      return;
+    }
+    const unsubscribe = streamingHandle.subscribe((text) => {
+      setStreamingText(text);
+    });
+    return unsubscribe;
+  }, [isStreaming, streamingHandle]);
+
+  const tokenCount = estimateTokenCount(streamingText);
+  const activeToolName: string | null = (() => {
+    if (!agentMode || !isStreaming) return null;
+    if (/fetch_page\s*\(|"fetch_page"|fetch_page/i.test(streamingText)) return "fetch_page";
+    if (/<tool_call>|web_search\s*\(|web_search/i.test(streamingText)) return "web_search";
+    return null;
+  })();
+  const isToolCallActive = activeToolName !== null;
+
+  const statusBadge = isStreaming ? (
+    <View style={styles.streamingStatusWrap}>
+      <View style={styles.streamingStatusBadge}>
+        <GeneratingDots />
+        <Text style={styles.streamingStatusText}>
+          Generating • ~{tokenCount} tokens
+        </Text>
+      </View>
+    </View>
+  ) : null;
+
+  const toolBadge =
+    agentMode && isStreaming ? (
+      <View style={styles.streamingStatusWrap}>
+        <View style={styles.toolStatusBadge}>
+          <Text style={styles.toolStatusText}>
+            {isToolCallActive
+              ? `Tool Call • ${activeToolName}`
+              : "Tool Call • waiting"}
+          </Text>
+        </View>
+      </View>
+    ) : null;
+
+  const modelBadge =
+    isStreaming && selectedModel ? (
+      <View style={styles.streamingStatusWrap}>
+        <View style={styles.modelStatusBadge}>
+          <Text style={styles.modelStatusText} numberOfLines={1}>
+            Model • {selectedModel}
+            {fallbackUsed ? " (fallback)" : ""}
+          </Text>
+        </View>
+      </View>
+    ) : null;
+
   if (showSkeleton) {
     return (
       <View style={{ paddingBottom: 16 }}>
+        {statusBadge}
+        {toolBadge}
+        {modelBadge}
         <SkeletonBubble lines={2} />
       </View>
     );
@@ -129,6 +254,9 @@ const ChatListFooter = React.memo(function ChatListFooter({
   if (isStreaming) {
     return (
       <View style={{ paddingBottom: 16 }}>
+        {statusBadge}
+        {toolBadge}
+        {modelBadge}
         <StreamingBubble
           streamingHandle={streamingHandle}
           isStreaming={isStreaming}
@@ -160,6 +288,8 @@ export default function ChatScreen() {
   const [showModels, setShowModels] = useState(false);
   const [prewarmStatus, setPrewarmStatus] = useState<PrewarmStatus>("idle");
   const [showSkeleton, setShowSkeleton] = useState(false);
+  const [selectedModel, setSelectedModel] = useState<string | null>(null);
+  const [fallbackUsed, setFallbackUsed] = useState(false);
 
   const listRef = useRef<FlashListRef<UIMessage>>(null);
   const streamRef = useRef<{ cancel: () => void } | null>(null);
@@ -362,7 +492,7 @@ export default function ChatScreen() {
         throw new Error(
           settings.mode === "native"
             ? "Native module not ready"
-            : "Cannot reach Ollama",
+            : "Cannot reach NVIDIA proxy",
         );
       }
     } catch (e: any) {
@@ -372,6 +502,8 @@ export default function ChatScreen() {
     }
 
     setIsStreaming(true);
+    setSelectedModel(null);
+    setFallbackUsed(false);
     streamingHandle.clear();
     let firstTokenReceived = false;
 
@@ -380,6 +512,7 @@ export default function ChatScreen() {
       baseUrl,
       model: settings.model,
       messages: history,
+      agentMode: settings.agentMode,
       turboMode: settings.turboMode,
       draftModel: settings.draftModel,
       onToken: (t) => {
@@ -389,10 +522,20 @@ export default function ChatScreen() {
         }
         streamingHandle.append(t);
       },
+      onMeta: (meta) => {
+        if (meta?.selectedModel) {
+          setSelectedModel(meta.selectedModel);
+        }
+        if (typeof meta?.fallbackUsed === "boolean") {
+          setFallbackUsed(meta.fallbackUsed);
+        }
+      },
       onError: (e) => {
         setError(String(e?.message || e));
         setIsStreaming(false);
         setShowSkeleton(false);
+        setSelectedModel(null);
+        setFallbackUsed(false);
         // Commit any partial content to messages
         const partialContent = streamingHandle.getText();
         if (partialContent) {
@@ -410,6 +553,8 @@ export default function ChatScreen() {
         }
         setIsStreaming(false);
         setShowSkeleton(false);
+        setSelectedModel(null);
+        setFallbackUsed(false);
         streamingHandle.clear();
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       },
@@ -419,6 +564,7 @@ export default function ChatScreen() {
     input,
     isStreaming,
     settings.mode,
+    settings.agentMode,
     settings.turboMode,
     settings.draftModel,
     baseUrl,
@@ -484,19 +630,19 @@ export default function ChatScreen() {
 
         <View style={styles.modePill}>
           <TouchableOpacity
-            onPress={() => saveSettings({ mode: "remote" })}
+            onPress={() => saveSettings({ mode: "nvidia-proxy" })}
             style={[
               styles.modeOption,
-              settings.mode === "remote" && styles.modeActive,
+              settings.mode === "nvidia-proxy" && styles.modeActive,
             ]}
           >
             <Text
               style={[
                 styles.modeText,
-                settings.mode === "remote" && styles.modeTextActive,
+                settings.mode === "nvidia-proxy" && styles.modeTextActive,
               ]}
             >
-              Remote
+              Proxy
             </Text>
           </TouchableOpacity>
           <TouchableOpacity
@@ -566,6 +712,9 @@ export default function ChatScreen() {
           <ChatListFooter
             showSkeleton={showSkeleton}
             isStreaming={isStreaming}
+            agentMode={settings.agentMode}
+            selectedModel={selectedModel}
+            fallbackUsed={fallbackUsed}
             streamingHandle={streamingHandle}
           />
         }
@@ -730,6 +879,71 @@ const styles = StyleSheet.create({
   },
   streamingContainer: {
     // Removed absolute positioning as it's now in FlaskList Footer
+  },
+  streamingStatusWrap: {
+    width: "100%",
+    flexDirection: "row",
+    justifyContent: "flex-start",
+    marginBottom: 8,
+  },
+  streamingStatusBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    backgroundColor: COLORS.surfaceFiltered,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    borderRadius: 12,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+  },
+  streamingStatusText: {
+    color: COLORS.textSecondary,
+    fontSize: 12,
+    fontWeight: "600",
+  },
+  toolStatusBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    backgroundColor: COLORS.surfaceAssistant,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    borderRadius: 12,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+  },
+  toolStatusText: {
+    color: COLORS.textPrimary,
+    fontSize: 12,
+    fontWeight: "600",
+  },
+  modelStatusBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: COLORS.surfaceFiltered,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    borderRadius: 12,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    maxWidth: "100%",
+  },
+  modelStatusText: {
+    color: COLORS.textSecondary,
+    fontSize: 12,
+    fontWeight: "600",
+  },
+  generatingDots: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+  },
+  generatingDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: COLORS.accent,
   },
 
   inputWrapper: {

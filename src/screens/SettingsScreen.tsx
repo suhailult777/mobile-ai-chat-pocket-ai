@@ -42,7 +42,8 @@ export default function SettingsScreen() {
   const [host, setHost] = useState(settings.host);
   const [port, setPort] = useState(settings.port);
   const [model, setModel] = useState(settings.model);
-  const [mode, setMode] = useState<"remote" | "native">(settings.mode);
+  const [mode, setMode] = useState<"nvidia-proxy" | "native">(settings.mode);
+  const [agentMode, setAgentMode] = useState(settings.agentMode);
   const [turboMode, setTurboMode] = useState(settings.turboMode);
   const [draftModel, setDraftModel] = useState(settings.draftModel);
 
@@ -55,7 +56,15 @@ export default function SettingsScreen() {
   const baseUrl = useMemo(() => `http://${host}:${port}`, [host, port]);
 
   const onSave = async () => {
-    await saveSettings({ host, port, model, mode, turboMode, draftModel });
+    await saveSettings({
+      host,
+      port,
+      model,
+      mode,
+      agentMode,
+      turboMode,
+      draftModel,
+    });
     setStatus("Saved");
     // Prewarm native model automatically to reduce cold starts
     if (mode === "native" && model.startsWith("file://")) {
@@ -73,7 +82,7 @@ export default function SettingsScreen() {
         ? "Connection OK"
         : mode === "native"
           ? "Native module not available or ping failed"
-          : "Failed to connect",
+          : "Failed to connect to NVIDIA proxy",
     );
     if (mode === "native") {
       // Try to surface optional native details for Phase 3
@@ -115,16 +124,19 @@ export default function SettingsScreen() {
         <Text style={styles.sectionTitle}>Connection Mode</Text>
         <View style={styles.modeRow}>
           <TouchableOpacity
-            onPress={() => setMode("remote")}
-            style={[styles.modeBtn, mode === "remote" && styles.modeBtnActive]}
+            onPress={() => setMode("nvidia-proxy")}
+            style={[
+              styles.modeBtn,
+              mode === "nvidia-proxy" && styles.modeBtnActive,
+            ]}
           >
             <Text
               style={[
                 styles.modeText,
-                mode === "remote" && styles.modeTextActive,
+                mode === "nvidia-proxy" && styles.modeTextActive,
               ]}
             >
-              Remote HTTP
+              NVIDIA Proxy
             </Text>
           </TouchableOpacity>
           <TouchableOpacity
@@ -146,7 +158,12 @@ export default function SettingsScreen() {
             Native mode requires a custom dev client/EAS build with the Ollama
             native module.
           </Text>
-        ) : null}
+        ) : (
+          <Text style={styles.hint}>
+            Proxy mode routes chat through your backend service, which securely
+            calls NVIDIA NIM.
+          </Text>
+        )}
         {mode === "native" && !!nativeInfo ? (
           <Text style={styles.hintSmall}>{nativeInfo}</Text>
         ) : null}
@@ -163,7 +180,7 @@ export default function SettingsScreen() {
           style={styles.input}
           value={port}
           onChangeText={setPort}
-          placeholder="11434"
+          placeholder="8787"
           keyboardType="numeric"
         />
 
@@ -172,8 +189,27 @@ export default function SettingsScreen() {
           style={styles.input}
           value={model}
           onChangeText={setModel}
-          placeholder="llama3"
+          placeholder="z-ai/glm5"
         />
+
+        {mode !== "native" && (
+          <View style={styles.turboSection}>
+            <View style={styles.turboHeader}>
+              <View>
+                <Text style={styles.sectionTitle}>Agent Mode (Scaffold)</Text>
+                <Text style={styles.hintSmall}>
+                  Sends tool-calling schema to proxy for GLM-5 agent workflows.
+                </Text>
+              </View>
+              <Switch
+                value={agentMode}
+                onValueChange={setAgentMode}
+                trackColor={{ false: "#767577", true: "#81b0ff" }}
+                thumbColor={agentMode ? "#007AFF" : "#f4f3f4"}
+              />
+            </View>
+          </View>
+        )}
 
         <View style={styles.row}>
           <TouchableOpacity onPress={onSave} style={styles.button}>
@@ -434,8 +470,8 @@ export default function SettingsScreen() {
 
         <Text style={styles.status}>{status}</Text>
         <Text style={styles.hint}>
-          Tip: For Expo Go, use Remote HTTP mode and connect to a desktop/laptop
-          running Ollama on the same LAN.
+          Tip: For Expo Go, use NVIDIA Proxy mode and point Host/Port to your
+          backend service on the same LAN.
         </Text>
       </ScrollView>
     </View>

@@ -27,3 +27,8 @@ Thumbs.db
 *.keystore
 **/build-*.json
 **/credentials.json
+
+tmpclaude-*
+nul
+server/.env
+server/nul

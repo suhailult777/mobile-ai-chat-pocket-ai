@@ -1,9 +1,9 @@
 import type { ChatMessage, StreamHandle } from "./ollamaClient";
 import {
-  streamChat,
-  getModels as getModelsHttp,
-  ping as pingHttp,
-} from "./ollamaClient";
+  streamNvidiaProxy,
+  getNvidiaProxyModels,
+  pingNvidiaProxy,
+} from "./nvidiaProxyClient";
 import {
   streamNative,
   getModelsNative,
@@ -12,7 +12,7 @@ import {
   disposeNative,
 } from "./nativeClient";
 
-export type ConnectionMode = "remote" | "native";
+export type ConnectionMode = "nvidia-proxy" | "native";
 
 // Request deduplication - track active stream
 let activeStreamHandle: StreamHandle | null = null;
@@ -23,7 +23,7 @@ export function pingProvider(opts: {
   mode: ConnectionMode;
   baseUrl: string;
 }): Promise<boolean> {
-  return opts.mode === "native" ? pingNative() : pingHttp(opts.baseUrl);
+  return opts.mode === "native" ? pingNative() : pingNvidiaProxy(opts.baseUrl);
 }
 
 export function getModelsProvider(opts: {
@@ -32,7 +32,7 @@ export function getModelsProvider(opts: {
 }): Promise<string[]> {
   return opts.mode === "native"
     ? getModelsNative()
-    : getModelsHttp(opts.baseUrl);
+    : getNvidiaProxyModels(opts.baseUrl);
 }
 
 export function streamProvider(opts: {
@@ -41,8 +41,14 @@ export function streamProvider(opts: {
   model: string;
   messages: ChatMessage[];
   onToken: (t: string) => void;
+  onMeta?: (meta: {
+    requestedModel?: string;
+    selectedModel?: string;
+    fallbackUsed?: boolean;
+  }) => void;
   onError?: (e: any) => void;
   onDone?: () => void;
+  agentMode?: boolean;
   // Speculative decoding options (native mode only)
   turboMode?: boolean;
   draftModel?: string;
@@ -75,11 +81,13 @@ export function streamProvider(opts: {
       },
     });
   } else {
-    handle = streamChat({
+    handle = streamNvidiaProxy({
       baseUrl: opts.baseUrl,
       model: opts.model,
       messages: opts.messages,
+      agentMode: opts.agentMode,
       onToken: opts.onToken,
+      onMeta: opts.onMeta,
       onError: (e) => {
         activeStreamHandle = null;
         opts.onError?.(e);
