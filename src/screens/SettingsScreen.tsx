@@ -10,6 +10,7 @@ import {
 } from "react-native";
 import { SettingsContext } from "../context/SettingsContext";
 import { getModelsProvider, pingProvider } from "../lib/providerRouter";
+import { pingOpenClawBridge } from "../lib/toolExecutor";
 import {
   getModelsDirNative,
   isNativeAvailable,
@@ -44,6 +45,10 @@ export default function SettingsScreen() {
   const [model, setModel] = useState(settings.model);
   const [mode, setMode] = useState<"nvidia-proxy" | "native">(settings.mode);
   const [agentMode, setAgentMode] = useState(settings.agentMode);
+  const [openclawEnabled, setOpenclawEnabled] = useState(
+    settings.openclawEnabled,
+  );
+  const [openclawNodeId, setOpenclawNodeId] = useState(settings.openclawNodeId);
   const [turboMode, setTurboMode] = useState(settings.turboMode);
   const [draftModel, setDraftModel] = useState(settings.draftModel);
 
@@ -56,12 +61,19 @@ export default function SettingsScreen() {
   const baseUrl = useMemo(() => `http://${host}:${port}`, [host, port]);
 
   const onSave = async () => {
+    if (openclawEnabled && !openclawNodeId.trim()) {
+      setStatus("OpenClaw requires a target node ID");
+      return;
+    }
+
     await saveSettings({
       host,
       port,
       model,
       mode,
       agentMode,
+      openclawEnabled,
+      openclawNodeId,
       turboMode,
       draftModel,
     });
@@ -72,6 +84,21 @@ export default function SettingsScreen() {
       if (warmed) setStatus("Saved • Native model prewarmed");
     }
     setTimeout(() => setStatus(""), 1500);
+  };
+
+  const onTestOpenClaw = async () => {
+    if (!openclawEnabled) {
+      setStatus("Enable OpenClaw first");
+      return;
+    }
+
+    setStatus("Testing OpenClaw bridge…");
+    try {
+      const ok = await pingOpenClawBridge(baseUrl);
+      setStatus(ok ? "OpenClaw bridge OK" : "OpenClaw bridge unreachable");
+    } catch (e: any) {
+      setStatus(`OpenClaw bridge error: ${e?.message || String(e)}`);
+    }
   };
 
   const onTest = async () => {
@@ -209,6 +236,55 @@ export default function SettingsScreen() {
             />
           </View>
         </View>
+
+        {agentMode ? (
+          <View style={styles.turboSection}>
+            <View style={styles.turboHeader}>
+              <View>
+                <Text style={styles.sectionTitle}>OpenClaw Bridge</Text>
+                <Text style={styles.hintSmall}>
+                  Enables controlled PC tools through the local proxy bridge.
+                  The app stores only the target node, not gateway credentials.
+                </Text>
+              </View>
+              <Switch
+                value={openclawEnabled}
+                onValueChange={setOpenclawEnabled}
+                trackColor={{ false: "#767577", true: "#81b0ff" }}
+                thumbColor={openclawEnabled ? "#007AFF" : "#f4f3f4"}
+              />
+            </View>
+
+            {openclawEnabled ? (
+              <>
+                <Text style={styles.label}>Target Node ID</Text>
+                <TextInput
+                  style={styles.input}
+                  value={openclawNodeId}
+                  onChangeText={setOpenclawNodeId}
+                  placeholder="laptop-01"
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                />
+                <Text style={styles.hintSmall}>
+                  The node ID must match a paired OpenClaw node on the bridge.
+                </Text>
+                <View style={styles.row}>
+                  <TouchableOpacity
+                    onPress={onTestOpenClaw}
+                    style={[styles.button, styles.secondary]}
+                  >
+                    <Text style={styles.buttonText}>Test Bridge</Text>
+                  </TouchableOpacity>
+                </View>
+              </>
+            ) : (
+              <Text style={styles.hintSmall}>
+                Turn this on when you want the agent to use OpenClaw tools.
+              </Text>
+            )}
+          </View>
+        ) : null}
 
         <View style={styles.row}>
           <TouchableOpacity onPress={onSave} style={styles.button}>

@@ -1,12 +1,7 @@
 import { NativeEventEmitter, NativeModules } from "react-native";
 import { File } from "expo-file-system/next";
 import type { ChatMessage, StreamHandle } from "./ollamaClient";
-import {
-  TOOL_SYSTEM_PROMPT,
-  parseToolCall,
-  executeWebSearch,
-  executeFetchPage,
-} from "./toolExecutor";
+import * as ToolExecutor from "./nativeToolExecutor";
 
 type StreamCallbacks = {
   onToken: (t: string) => void;
@@ -377,6 +372,9 @@ export function streamNative(
     model: string;
     messages: ChatMessage[];
     agentMode?: boolean;
+    baseUrl: string;
+    openclawEnabled?: boolean;
+    openclawNodeId?: string;
     turboMode?: boolean;
     draftModel?: string;
   } & StreamCallbacks,
@@ -490,10 +488,16 @@ export function streamNative(
 
       if (opts.agentMode) {
         const maxAgentLoops = 4;
+        const toolSystemPrompt = ToolExecutor.buildToolSystemPrompt({
+          openclawEnabled: opts.openclawEnabled,
+        });
         let workingMessages: ChatMessage[] = [
-          { role: "system", content: TOOL_SYSTEM_PROMPT },
+          { role: "system", content: toolSystemPrompt },
           ...opts.messages,
         ];
+        let lastToolSignature: string | null = null;
+        let repeatedToolCount = 0;
+        const maxRepeatedToolCalls = 4;
 
         for (let loop = 0; loop < maxAgentLoops; loop++) {
           if (!active || canceled) return;
@@ -533,41 +537,60 @@ export function streamNative(
             }
           }
 
-          const toolCall = parseToolCall(loopEmittedText);
+          const toolCall = ToolExecutor.parseToolCall(loopEmittedText);
           if (!toolCall) {
             break;
+          }
+
+          const toolSignature =
+            ToolExecutor.normalizeToolCallSignature(toolCall);
+          if (toolSignature === lastToolSignature) {
+            repeatedToolCount += 1;
+          } else {
+            lastToolSignature = toolSignature;
+            repeatedToolCount = 1;
+          }
+
+          if (repeatedToolCount >= maxRepeatedToolCalls) {
+            opts.onError?.(
+              new Error(
+                `Tool loop detected for ${toolCall.name} after ${repeatedToolCount} repeated calls`,
+              ),
+            );
+            return;
           }
 
           if (!active || canceled) return;
 
           opts.onToken(`\n\nTool Call • ${toolCall.name}\n`);
-          let toolResult = "";
           try {
-            if (toolCall.name === "web_search") {
-              toolResult = await executeWebSearch(
-                String(toolCall.arguments?.query ?? ""),
-                Number(toolCall.arguments?.max_results ?? 5),
-              );
-            } else {
-              toolResult = await executeFetchPage(
-                String(toolCall.arguments?.url ?? ""),
-                typeof toolCall.arguments?.focus === "string"
-                  ? toolCall.arguments.focus
-                  : undefined,
-              );
-            }
-          } catch (toolErr: any) {
-            toolResult = `tool execution error: ${toolErr?.message || toolErr}`;
-          }
+            const toolResult = await ToolExecutor.executeParsedToolCall(
+              toolCall,
+              {
+                baseUrl: opts.baseUrl,
+                openclawEnabled: opts.openclawEnabled,
+                openclawNodeId: opts.openclawNodeId,
+              },
+            );
 
-          workingMessages = [
-            ...workingMessages,
-            { role: "assistant", content: loopEmittedText },
-            {
-              role: "system",
-              content: `Tool result (${toolCall.name}):\n${toolResult}`,
-            },
-          ];
+            workingMessages = [
+              ...workingMessages,
+              { role: "assistant", content: loopEmittedText },
+              {
+                role: "system",
+                content: `Tool result (${toolCall.name}):\n${toolResult}`,
+              },
+            ];
+          } catch (toolErr: any) {
+            workingMessages = [
+              ...workingMessages,
+              { role: "assistant", content: loopEmittedText },
+              {
+                role: "system",
+                content: `Tool result (${toolCall.name}):\ntool execution error: ${toolErr?.message || toolErr}`,
+              },
+            ];
+          }
         }
 
         if (!active) return;

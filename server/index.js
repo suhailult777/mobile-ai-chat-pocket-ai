@@ -109,6 +109,118 @@ const FETCH_PAGE_TOOL = {
     },
 };
 
+const OPENCLAW_GATEWAY_URL = normalizeGatewayUrl(
+    process.env.OPENCLAW_GATEWAY_URL || "http://127.0.0.1:3000",
+);
+const OPENCLAW_GATEWAY_TOKEN = process.env.OPENCLAW_GATEWAY_TOKEN || "";
+const OPENCLAW_REPLAY_WINDOW_MS = Number(process.env.OPENCLAW_REPLAY_WINDOW_MS || 5000);
+const OPENCLAW_NODE_STATUS_TOOL = {
+    type: "function",
+    function: {
+        name: "openclaw_node_status",
+        description:
+            "Get the current status for a paired OpenClaw node. Use this before executing a command if you need to verify availability or the current session state.",
+        parameters: {
+            type: "object",
+            properties: {
+                node_id: {
+                    type: "string",
+                    description: "Optional target node ID. If omitted, the saved node target is used.",
+                },
+            },
+            required: [],
+        },
+    },
+};
+const OPENCLAW_LIST_NODES_TOOL = {
+    type: "function",
+    function: {
+        name: "openclaw_list_nodes",
+        description:
+            "List paired OpenClaw nodes that are visible to the bridge. Use this to confirm which target node IDs are available before attempting a control action.",
+        parameters: {
+            type: "object",
+            properties: {},
+            required: [],
+        },
+    },
+};
+const OPENCLAW_RUN_COMMAND_TOOL = {
+    type: "function",
+    function: {
+        name: "openclaw_run_command",
+        description:
+            "Run a controlled command on the selected OpenClaw node. Use only when the user explicitly asks for a PC action and prefer the smallest safe command that satisfies the request.",
+        parameters: {
+            type: "object",
+            properties: {
+                node_id: {
+                    type: "string",
+                    description: "Optional target node ID. If omitted, the saved node target is used.",
+                },
+                command: {
+                    type: "string",
+                    description: "Shell command to execute on the paired node.",
+                },
+                cwd: {
+                    type: "string",
+                    description: "Optional working directory for the command.",
+                },
+                timeout_ms: {
+                    type: "number",
+                    description: "Optional timeout for the command in milliseconds.",
+                },
+            },
+            required: ["command"],
+        },
+    },
+};
+const OPENCLAW_RUN_COMMAND_DENY_PATTERNS = [
+    /(^|\s)rm\s+-rf(\s|$)/i,
+    /(^|\s)format(\s|$)/i,
+    /(^|\s)shutdown(\s|$)/i,
+    /(^|\s)reboot(\s|$)/i,
+    /(^|\s)mkfs(\s|$)/i,
+    /(^|\s)del(\s|$)/i,
+    /:\(\)\{:\|:&\};:/i,
+];
+const openclawReplayCache = new Map();
+
+function getAgentTools(openclawEnabled) {
+    return openclawEnabled
+        ? [WEB_SEARCH_TOOL, FETCH_PAGE_TOOL, OPENCLAW_LIST_NODES_TOOL, OPENCLAW_NODE_STATUS_TOOL, OPENCLAW_RUN_COMMAND_TOOL]
+        : [WEB_SEARCH_TOOL, FETCH_PAGE_TOOL];
+}
+
+function normalizeGatewayUrl(input) {
+    return String(input || "").trim().replace(/\/$/, "");
+}
+
+function isDangerousOpenClawCommand(command) {
+    const text = String(command || "").trim();
+    if (!text) return true;
+    return OPENCLAW_RUN_COMMAND_DENY_PATTERNS.some((pattern) => pattern.test(text));
+}
+
+function getReplayCacheEntry(idempotencyKey) {
+    if (!idempotencyKey) return null;
+    const entry = openclawReplayCache.get(idempotencyKey);
+    if (!entry) return null;
+    if (Date.now() > entry.expiresAt) {
+        openclawReplayCache.delete(idempotencyKey);
+        return null;
+    }
+    return entry;
+}
+
+function setReplayCacheEntry(idempotencyKey, value) {
+    if (!idempotencyKey) return;
+    openclawReplayCache.set(idempotencyKey, {
+        expiresAt: Date.now() + OPENCLAW_REPLAY_WINDOW_MS,
+        value,
+    });
+}
+
 function safeParseJson(value) {
     try {
         if (typeof value === "string") return JSON.parse(value);
@@ -122,7 +234,7 @@ function extractTextToolCall(content) {
     if (typeof content !== "string") return null;
 
     // Pattern 1 – Parenthetical JSON: <tool_call>tool_name({"key":"val"})</tool_call>
-    for (const toolName of ["web_search", "fetch_page"]) {
+    for (const toolName of ["web_search", "fetch_page", "openclaw_list_nodes", "openclaw_node_status", "openclaw_run_command"]) {
         const parenRegex = new RegExp(
             `<tool_call>\\s*${toolName}\\s*\\(\\s*(\\{[\\s\\S]*?\\})\\s*\\)\\s*(?:<\\/tool_call>|$)`,
             "i",
@@ -147,7 +259,7 @@ function extractTextToolCall(content) {
     const argBlock = tagStyle[1];
 
     // Detect which tool this block belongs to
-    const toolNameMatch = argBlock.match(/^\s*(web_search|fetch_page)\b/i);
+    const toolNameMatch = argBlock.match(/^\s*(web_search|fetch_page|openclaw_list_nodes|openclaw_node_status|openclaw_run_command)\b/i);
     const detectedTool = toolNameMatch?.[1]?.toLowerCase() || "web_search";
 
     const args = {};
@@ -167,6 +279,86 @@ function extractTextToolCall(content) {
         id: null,
         function: { name: detectedTool, arguments: JSON.stringify(args) },
     };
+}
+
+function buildOpenClawGatewayPayload(tool, args, nodeId, idempotencyKey) {
+    return {
+        tool,
+        args: args || {},
+        nodeId: nodeId || undefined,
+        node_id: nodeId || undefined,
+        target_node_id: nodeId || undefined,
+        idempotencyKey,
+        idempotency_key: idempotencyKey,
+    };
+}
+
+async function parseGatewayResponse(response) {
+    const text = await response.text();
+    if (!text.trim()) return null;
+    try {
+        return JSON.parse(text);
+    } catch {
+        return text;
+    }
+}
+
+async function invokeOpenClawGateway({ tool, args, nodeId, idempotencyKey }) {
+    if (!OPENCLAW_GATEWAY_TOKEN) {
+        const error = new Error("Missing OPENCLAW_GATEWAY_TOKEN in environment");
+        error.status = 500;
+        throw error;
+    }
+
+    const response = await fetch(`${OPENCLAW_GATEWAY_URL}/tools/invoke`, {
+        method: "POST",
+        headers: {
+            Authorization: `Bearer ${OPENCLAW_GATEWAY_TOKEN}`,
+            "Content-Type": "application/json",
+            Accept: "application/json",
+            "X-Idempotency-Key": idempotencyKey,
+        },
+        body: JSON.stringify(buildOpenClawGatewayPayload(tool, args, nodeId, idempotencyKey)),
+    });
+
+    const parsed = await parseGatewayResponse(response);
+
+    if (!response.ok) {
+        const error = new Error(
+            `OpenClaw gateway returned HTTP ${response.status}: ${(parsed && typeof parsed === "object" && (parsed.error || parsed.details)) ||
+            (typeof parsed === "string" ? parsed : response.statusText || "Unknown error")
+            }`,
+        );
+        error.status = response.status;
+        error.details = parsed;
+        throw error;
+    }
+
+    return parsed;
+}
+
+async function fetchOpenClawGatewayHealth() {
+    const endpoints = ["/health", "/status"];
+
+    for (const endpoint of endpoints) {
+        try {
+            const response = await fetch(`${OPENCLAW_GATEWAY_URL}${endpoint}`, {
+                method: "GET",
+                headers: {
+                    Authorization: `Bearer ${OPENCLAW_GATEWAY_TOKEN}`,
+                    Accept: "application/json",
+                },
+            });
+            const parsed = await parseGatewayResponse(response);
+            if (response.ok) {
+                return { ok: true, endpoint, data: parsed };
+            }
+        } catch (error) {
+            console.warn(`[OpenClaw] health check failed on ${endpoint}: ${error?.message || error}`);
+        }
+    }
+
+    return { ok: false };
 }
 
 function extractWebResults(payload, limit) {
@@ -460,6 +652,16 @@ function summarizeToolResults(allToolResults) {
             continue;
         }
 
+        if (item?.type === "openclaw") {
+            entries.push({
+                kind: "openclaw",
+                tool: item.tool || "openclaw",
+                nodeId: item.nodeId || "",
+                result: item.result || {},
+            });
+            continue;
+        }
+
         // web_search result (array of result objects)
         const results = Array.isArray(item?.results) ? item.results : [];
         for (const r of results) {
@@ -481,6 +683,10 @@ function summarizeToolResults(allToolResults) {
         .map((e) => {
             if (e.kind === "page") {
                 return `• [Fetched page] ${e.url}\n  ${e.content}`;
+            }
+            if (e.kind === "openclaw") {
+                const nodeLabel = e.nodeId ? ` on ${e.nodeId}` : "";
+                return `• [OpenClaw] ${e.tool}${nodeLabel}\n  ${JSON.stringify(e.result).slice(0, 600)}`;
             }
             const urlPart = e.url ? ` (${e.url})` : "";
             const snippetPart = e.snippet ? ` — ${e.snippet}` : "";
@@ -533,9 +739,78 @@ function sendSyntheticSseFromJson(res, completionJson) {
     writeSseContentAndEnd(res, completionJson);
 }
 
+function normalizeOpenClawToolArgs(rawArgs) {
+    if (typeof rawArgs === "string") {
+        return safeParseJson(rawArgs) || { input: rawArgs };
+    }
+    if (rawArgs && typeof rawArgs === "object") {
+        return rawArgs;
+    }
+    return {};
+}
+
+function createOpenClawIdempotencyKey(tool, args) {
+    const signature = JSON.stringify(args || {});
+    const bucket = Math.floor(Date.now() / OPENCLAW_REPLAY_WINDOW_MS);
+    return `${tool}:${signature}:${bucket}`;
+}
+
+async function runOpenClawTool(fnName, rawArgs, defaultNodeId) {
+    const args = normalizeOpenClawToolArgs(rawArgs);
+    const nodeId = String(args.node_id || args.nodeId || defaultNodeId || "").trim();
+    const idempotencyKey = createOpenClawIdempotencyKey(fnName, args);
+
+    if (fnName === "openclaw_list_nodes") {
+        const result = await invokeOpenClawGateway({
+            tool: fnName,
+            args,
+            nodeId: nodeId || undefined,
+            idempotencyKey,
+        });
+        return { type: "openclaw", tool: fnName, nodeId: nodeId || null, result };
+    }
+
+    if (fnName === "openclaw_node_status") {
+        if (!nodeId) {
+            throw new Error("OpenClaw node_id is required for openclaw_node_status");
+        }
+        const result = await invokeOpenClawGateway({
+            tool: fnName,
+            args,
+            nodeId,
+            idempotencyKey,
+        });
+        return { type: "openclaw", tool: fnName, nodeId, result };
+    }
+
+    if (fnName === "openclaw_run_command") {
+        if (!nodeId) {
+            throw new Error("OpenClaw node_id is required for openclaw_run_command");
+        }
+        const command = String(args.command || "").trim();
+        if (!command) {
+            throw new Error("OpenClaw command is required for openclaw_run_command");
+        }
+        if (isDangerousOpenClawCommand(command)) {
+            throw new Error("OpenClaw command denied by policy");
+        }
+        const result = await invokeOpenClawGateway({
+            tool: fnName,
+            args,
+            nodeId,
+            idempotencyKey,
+        });
+        return { type: "openclaw", tool: fnName, nodeId, result };
+    }
+
+    throw new Error(`Unsupported OpenClaw tool: ${fnName}`);
+}
+
 async function runAgentWebSearchFlow(initialBody) {
     const model = initialBody?.model || defaultModel;
-    const MAX_ROUNDS = 3;
+    const openclawEnabled = initialBody?.openclaw_enabled === true;
+    const openclawNodeId = String(initialBody?.openclaw_node_id || "").trim();
+    const MAX_ROUNDS = openclawEnabled ? 4 : 3;
     const messages = Array.isArray(initialBody?.messages)
         ? [...initialBody.messages]
         : [];
@@ -548,7 +823,7 @@ async function runAgentWebSearchFlow(initialBody) {
             ...initialBody,
             model,
             stream: false,
-            tools: [WEB_SEARCH_TOOL, FETCH_PAGE_TOOL],
+            tools: getAgentTools(openclawEnabled),
             tool_choice: "auto",
             messages,
         });
@@ -586,7 +861,7 @@ async function runAgentWebSearchFlow(initialBody) {
         if (textToolCall) {
             messages.push({
                 role: "assistant",
-                content: "Gathering information using research tools.",
+                content: "Gathering information using research and OpenClaw tools.",
             });
         } else {
             messages.push(assistantMessage);
@@ -598,21 +873,29 @@ async function runAgentWebSearchFlow(initialBody) {
         const toolMessagePromises = normalizedCalls.map(async (call) => {
             const fnName = call?.function?.name;
             const callId = call?.id;
-            let result;
             let toolResultForHistory;
 
-            if (fnName === "web_search") {
-                result = await runWebSearch(call?.function?.arguments);
-                allToolResults.push(result);
-                toolResultForHistory = result;
-            } else if (fnName === "fetch_page") {
-                const pageResult = await runFetchPage(call?.function?.arguments);
-                allToolResults.push({ type: "fetch_page", ...pageResult });
-                toolResultForHistory = pageResult;
-                result = pageResult;
-            } else {
-                result = { error: `Unsupported tool: ${fnName}` };
-                toolResultForHistory = result;
+            try {
+                if (fnName === "web_search") {
+                    const result = await runWebSearch(call?.function?.arguments);
+                    allToolResults.push(result);
+                    toolResultForHistory = result;
+                } else if (fnName === "fetch_page") {
+                    const pageResult = await runFetchPage(call?.function?.arguments);
+                    allToolResults.push({ type: "fetch_page", ...pageResult });
+                    toolResultForHistory = pageResult;
+                } else if (fnName === "openclaw_list_nodes" || fnName === "openclaw_node_status" || fnName === "openclaw_run_command") {
+                    const openclawResult = await runOpenClawTool(fnName, call?.function?.arguments, openclawNodeId);
+                    allToolResults.push(openclawResult);
+                    toolResultForHistory = openclawResult;
+                } else {
+                    toolResultForHistory = { error: `Unsupported tool: ${fnName}` };
+                }
+            } catch (error) {
+                toolResultForHistory = {
+                    error: `Tool execution error: ${error?.message || error}`,
+                };
+                allToolResults.push(toolResultForHistory);
             }
 
             if (callId) {
@@ -654,6 +937,125 @@ async function runAgentWebSearchFlow(initialBody) {
 
     return final;
 }
+
+app.get("/openclaw/health", async (_req, res) => {
+    try {
+        if (!OPENCLAW_GATEWAY_TOKEN) {
+            res.status(500).json({
+                ok: false,
+                error: "Missing OPENCLAW_GATEWAY_TOKEN in environment",
+            });
+            return;
+        }
+
+        const result = await fetchOpenClawGatewayHealth();
+        if (!result.ok) {
+            res.status(502).json({
+                ok: false,
+                error: "OpenClaw gateway health check failed",
+                gatewayUrl: OPENCLAW_GATEWAY_URL,
+            });
+            return;
+        }
+
+        res.json({
+            ok: true,
+            bridge: "openclaw",
+            gatewayUrl: OPENCLAW_GATEWAY_URL,
+            endpoint: result.endpoint,
+            data: result.data,
+        });
+    } catch (error) {
+        res.status(500).json({
+            ok: false,
+            error: error instanceof Error ? error.message : String(error),
+        });
+    }
+});
+
+app.post("/openclaw/invoke", async (req, res) => {
+    try {
+        if (!OPENCLAW_GATEWAY_TOKEN) {
+            res.status(500).json({
+                ok: false,
+                error: "Missing OPENCLAW_GATEWAY_TOKEN in environment",
+            });
+            return;
+        }
+
+        const tool = String(req.body?.tool || "").trim();
+        const args = req.body?.args && typeof req.body.args === "object" ? req.body.args : {};
+        const nodeId = String(req.body?.nodeId || req.body?.node_id || req.body?.target_node_id || "").trim();
+        const idempotencyKey = String(req.body?.idempotencyKey || req.body?.idempotency_key || "").trim();
+
+        if (!tool) {
+            res.status(400).json({ ok: false, error: "tool is required" });
+            return;
+        }
+
+        if (!idempotencyKey) {
+            res.status(400).json({ ok: false, error: "idempotencyKey is required" });
+            return;
+        }
+
+        const cached = getReplayCacheEntry(idempotencyKey);
+        if (cached) {
+            res.setHeader("x-openclaw-replayed", "true");
+            res.json({
+                ok: true,
+                replayed: true,
+                ...cached.value,
+            });
+            return;
+        }
+
+        if (tool === "openclaw_run_command") {
+            const command = String(args.command || "").trim();
+            if (!nodeId) {
+                res.status(400).json({ ok: false, error: "nodeId is required for openclaw_run_command" });
+                return;
+            }
+            if (!command) {
+                res.status(400).json({ ok: false, error: "command is required for openclaw_run_command" });
+                return;
+            }
+            if (isDangerousOpenClawCommand(command)) {
+                res.status(403).json({ ok: false, error: "OpenClaw command denied by policy" });
+                return;
+            }
+        }
+
+        if ((tool === "openclaw_node_status" || tool === "openclaw_run_command") && !nodeId) {
+            res.status(400).json({ ok: false, error: `nodeId is required for ${tool}` });
+            return;
+        }
+
+        const result = await invokeOpenClawGateway({
+            tool,
+            args,
+            nodeId: nodeId || undefined,
+            idempotencyKey,
+        });
+
+        const payload = {
+            ok: true,
+            replayed: false,
+            tool,
+            nodeId: nodeId || null,
+            result,
+        };
+
+        setReplayCacheEntry(idempotencyKey, payload);
+        res.json(payload);
+    } catch (error) {
+        const status = error?.status || 500;
+        res.status(status).json({
+            ok: false,
+            error: error instanceof Error ? error.message : String(error),
+            details: error?.details,
+        });
+    }
+});
 
 app.get("/health", (_req, res) => {
     res.json({ ok: true, service: "nvidia-proxy", model: defaultModel });

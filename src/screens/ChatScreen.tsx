@@ -515,6 +515,8 @@ export default function ChatScreen() {
       model: settings.model,
       messages: history,
       agentMode: settings.agentMode,
+      openclawEnabled: settings.openclawEnabled,
+      openclawNodeId: settings.openclawNodeId,
       turboMode: settings.turboMode,
       draftModel: settings.draftModel,
       onToken: (t) => {

@@ -1,10 +1,13 @@
 import type { ChatMessage, StreamHandle } from "./ollamaClient";
+import { getToolSchemas } from "./toolExecutor";
 
 export type NvidiaProxyStreamOptions = {
   baseUrl: string;
   model: string;
   messages: ChatMessage[];
   agentMode?: boolean;
+  openclawEnabled?: boolean;
+  openclawNodeId?: string;
   onToken: (text: string) => void;
   onMeta?: (meta: {
     requestedModel?: string;
@@ -48,58 +51,11 @@ export function streamNvidiaProxy(
     stream: true,
     agent_mode: Boolean(opts.agentMode),
     tools: opts.agentMode
-      ? [
-          {
-            type: "function",
-            function: {
-              name: "web_search",
-              description:
-                "Search the web for recent information. Returns ranked results with titles, URLs, and content snippets. Use this first to find relevant pages on any topic.",
-              parameters: {
-                type: "object",
-                properties: {
-                  query: {
-                    type: "string",
-                    description:
-                      "Search query — be specific and include key terms",
-                  },
-                  max_results: {
-                    type: "number",
-                    description:
-                      "Maximum number of results to return (default 5, max 8)",
-                  },
-                },
-                required: ["query"],
-              },
-            },
-          },
-          {
-            type: "function",
-            function: {
-              name: "fetch_page",
-              description:
-                "Fetch the full content of a specific web page as clean markdown. Use after web_search to read a result URL in detail — ideal for pricing pages, documentation, or any in-depth content.",
-              parameters: {
-                type: "object",
-                properties: {
-                  url: {
-                    type: "string",
-                    description:
-                      "Full URL of the page to fetch (must start with https://)",
-                  },
-                  focus: {
-                    type: "string",
-                    description:
-                      "Optional: specific topic or section to look for within the page (e.g. 'pricing', 'installation', 'changelog')",
-                  },
-                },
-                required: ["url"],
-              },
-            },
-          },
-        ]
+      ? getToolSchemas({ openclawEnabled: opts.openclawEnabled })
       : undefined,
     tool_choice: opts.agentMode ? "auto" : undefined,
+    openclaw_enabled: Boolean(opts.openclawEnabled),
+    openclaw_node_id: opts.openclawNodeId || undefined,
   });
 
   const emitTokenFromObject = (obj: any) => {

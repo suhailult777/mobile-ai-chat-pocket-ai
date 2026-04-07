@@ -7,6 +7,8 @@ export type Settings = {
   model: string;
   mode: "nvidia-proxy" | "native";
   agentMode: boolean;
+  openclawEnabled: boolean;
+  openclawNodeId: string;
   // Speculative decoding settings (Phase 6)
   turboMode: boolean;
   draftModel: string; // file:// path to smaller GGUF model for speculation
@@ -18,6 +20,8 @@ export const defaultSettings: Settings = {
   model: "nvidia/nemotron-3-nano-30b-a3b",
   mode: "nvidia-proxy",
   agentMode: true,
+  openclawEnabled: false,
+  openclawNodeId: "",
   turboMode: false,
   draftModel: "",
 };
@@ -33,16 +37,27 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     (async () => {
       try {
-        const [host, port, model, mode, agentMode, turboMode, draftModel] =
-          await Promise.all([
-            SecureStore.getItemAsync("host"),
-            SecureStore.getItemAsync("port"),
-            SecureStore.getItemAsync("model"),
-            SecureStore.getItemAsync("mode"),
-            SecureStore.getItemAsync("agentMode"),
-            SecureStore.getItemAsync("turboMode"),
-            SecureStore.getItemAsync("draftModel"),
-          ]);
+        const [
+          host,
+          port,
+          model,
+          mode,
+          agentMode,
+          openclawEnabled,
+          openclawNodeId,
+          turboMode,
+          draftModel,
+        ] = await Promise.all([
+          SecureStore.getItemAsync("host"),
+          SecureStore.getItemAsync("port"),
+          SecureStore.getItemAsync("model"),
+          SecureStore.getItemAsync("mode"),
+          SecureStore.getItemAsync("agentMode"),
+          SecureStore.getItemAsync("openclawEnabled"),
+          SecureStore.getItemAsync("openclawNodeId"),
+          SecureStore.getItemAsync("turboMode"),
+          SecureStore.getItemAsync("draftModel"),
+        ]);
         const normalizedMode: Settings["mode"] =
           mode === "remote"
             ? "nvidia-proxy"
@@ -55,6 +70,10 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
           agentMode: agentMode
             ? agentMode === "true"
             : defaultSettings.agentMode,
+          openclawEnabled: openclawEnabled
+            ? openclawEnabled === "true"
+            : defaultSettings.openclawEnabled,
+          openclawNodeId: openclawNodeId || defaultSettings.openclawNodeId,
           turboMode: turboMode === "true",
           draftModel: draftModel || defaultSettings.draftModel,
         });
@@ -79,6 +98,13 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
           await SecureStore.setItemAsync("mode", next.mode);
         if (partial.agentMode !== undefined)
           await SecureStore.setItemAsync("agentMode", String(next.agentMode));
+        if (partial.openclawEnabled !== undefined)
+          await SecureStore.setItemAsync(
+            "openclawEnabled",
+            String(next.openclawEnabled),
+          );
+        if (partial.openclawNodeId !== undefined)
+          await SecureStore.setItemAsync("openclawNodeId", next.openclawNodeId);
         if (partial.turboMode !== undefined)
           await SecureStore.setItemAsync("turboMode", String(next.turboMode));
         if (partial.draftModel !== undefined)

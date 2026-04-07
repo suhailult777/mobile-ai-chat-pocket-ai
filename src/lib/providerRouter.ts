@@ -52,6 +52,8 @@ export function streamProvider(opts: {
   // Speculative decoding options (native mode only)
   turboMode?: boolean;
   draftModel?: string;
+  openclawEnabled?: boolean;
+  openclawNodeId?: string;
 }): StreamHandle {
   const now = Date.now();
 
@@ -69,6 +71,9 @@ export function streamProvider(opts: {
       model: opts.model,
       messages: opts.messages,
       agentMode: opts.agentMode,
+      baseUrl: opts.baseUrl,
+      openclawEnabled: opts.openclawEnabled,
+      openclawNodeId: opts.openclawNodeId,
       onToken: opts.onToken,
       onMeta: opts.onMeta,
       turboMode: opts.turboMode,
@@ -88,6 +93,8 @@ export function streamProvider(opts: {
       model: opts.model,
       messages: opts.messages,
       agentMode: opts.agentMode,
+      openclawEnabled: opts.openclawEnabled,
+      openclawNodeId: opts.openclawNodeId,
       onToken: opts.onToken,
       onMeta: opts.onMeta,
       onError: (e) => {
