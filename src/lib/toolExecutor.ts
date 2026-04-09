@@ -412,7 +412,10 @@ async function invokeOpenClawBridge(
   try {
     const normalizedBase = normalizeBaseUrl(baseUrl);
     if (!normalizedBase) {
-      return formatOpenClawErrorText("bridge baseUrl is required", "missing_base_url");
+      return formatOpenClawErrorText(
+        "bridge baseUrl is required",
+        "missing_base_url",
+      );
     }
 
     const res = await fetchWithTimeout(
@@ -446,7 +449,9 @@ async function invokeOpenClawBridge(
     const detail = error instanceof Error ? error.message : String(error);
     const errorCode =
       (error as any)?.code ||
-      ((error as any)?.status === 504 ? "gateway_timeout" : "gateway_unreachable");
+      ((error as any)?.status === 504
+        ? "gateway_timeout"
+        : "gateway_unreachable");
     return formatOpenClawErrorText(detail, errorCode, (error as any)?.status);
   }
 }

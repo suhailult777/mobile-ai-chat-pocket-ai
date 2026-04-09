@@ -39,7 +39,9 @@ describe("settingsPersistence", () => {
   });
 
   it("falls back to defaults when values are absent", () => {
-    expect(normalizeStoredSettings({}, defaultSettings)).toEqual(defaultSettings);
+    expect(normalizeStoredSettings({}, defaultSettings)).toEqual(
+      defaultSettings,
+    );
   });
 
   it("serializes OpenClaw fields for persistence", () => {

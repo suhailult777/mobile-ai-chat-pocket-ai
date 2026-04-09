@@ -51,14 +51,20 @@ describe("toolExecutor", () => {
     expect(state.loopDetected).toBe(false);
 
     state = advanceToolLoopState(
-      { lastSignature: state.lastSignature, repeatedCount: state.repeatedCount },
+      {
+        lastSignature: state.lastSignature,
+        repeatedCount: state.repeatedCount,
+      },
       signature,
       3,
     );
     expect(state.loopDetected).toBe(false);
 
     state = advanceToolLoopState(
-      { lastSignature: state.lastSignature, repeatedCount: state.repeatedCount },
+      {
+        lastSignature: state.lastSignature,
+        repeatedCount: state.repeatedCount,
+      },
       signature,
       3,
     );

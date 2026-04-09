@@ -21,7 +21,10 @@ type MockGateway = {
   calls: GatewayCall[];
 };
 
-const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const repoRoot = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  "..",
+);
 const serverDir = path.join(repoRoot, "server");
 const testTimeoutMs = 30_000;
 
@@ -63,7 +66,10 @@ async function startMockGateway(): Promise<MockGateway> {
     const requestPath = new URL(req.url || "/", "http://127.0.0.1").pathname;
     const headers = req.headers;
 
-    if (req.method === "GET" && (requestPath === "/health" || requestPath === "/status")) {
+    if (
+      req.method === "GET" &&
+      (requestPath === "/health" || requestPath === "/status")
+    ) {
       res.setHeader("Content-Type", "application/json");
       res.end(JSON.stringify({ ok: true, endpoint: requestPath }));
       return;
@@ -86,7 +92,8 @@ async function startMockGateway(): Promise<MockGateway> {
       }
 
       if (body?.tool === "openclaw_node_status") {
-        const nodeId = body?.nodeId || body?.args?.node_id || body?.args?.nodeId;
+        const nodeId =
+          body?.nodeId || body?.args?.node_id || body?.args?.nodeId;
         if (nodeId === "error-node") {
           res.statusCode = 500;
           res.end(JSON.stringify({ error: "gateway exploded" }));
@@ -95,7 +102,11 @@ async function startMockGateway(): Promise<MockGateway> {
 
         res.end(
           JSON.stringify({
-            node: { id: nodeId || "node-1", name: "Node One", status: "online" },
+            node: {
+              id: nodeId || "node-1",
+              name: "Node One",
+              status: "online",
+            },
           }),
         );
         return;
@@ -236,7 +247,9 @@ describe("OpenClaw bridge integration", () => {
           }),
         ]),
       );
-      expect(gateway!.calls[0]?.headers?.authorization).toBe("Bearer test-token");
+      expect(gateway!.calls[0]?.headers?.authorization).toBe(
+        "Bearer test-token",
+      );
     },
     testTimeoutMs,
   );
@@ -246,7 +259,10 @@ describe("OpenClaw bridge integration", () => {
     async () => {
       const response = await requestJson(proxyBaseUrl, "/openclaw/invoke", {
         method: "POST",
-        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "application/json",
+        },
         body: JSON.stringify({
           tool: "openclaw_node_status",
           nodeId: "missing-node",
@@ -261,11 +277,14 @@ describe("OpenClaw bridge integration", () => {
         code: "unknown_node_id",
       });
       expect(
-        gateway!.calls.some((call) => call.body?.tool === "openclaw_node_status"),
+        gateway!.calls.some(
+          (call) => call.body?.tool === "openclaw_node_status",
+        ),
       ).toBe(false);
       expect(
-        gateway!.calls.filter((call) => call.body?.tool === "openclaw_list_nodes")
-          .length,
+        gateway!.calls.filter(
+          (call) => call.body?.tool === "openclaw_list_nodes",
+        ).length,
       ).toBeGreaterThanOrEqual(1);
     },
     testTimeoutMs,
@@ -283,12 +302,18 @@ describe("OpenClaw bridge integration", () => {
 
       const first = await requestJson(proxyBaseUrl, "/openclaw/invoke", {
         method: "POST",
-        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "application/json",
+        },
         body: JSON.stringify(payload),
       });
       const second = await requestJson(proxyBaseUrl, "/openclaw/invoke", {
         method: "POST",
-        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "application/json",
+        },
         body: JSON.stringify(payload),
       });
 
@@ -310,8 +335,9 @@ describe("OpenClaw bridge integration", () => {
       });
 
       expect(
-        gateway!.calls.filter((call) => call.body?.tool === "openclaw_run_command")
-          .length,
+        gateway!.calls.filter(
+          (call) => call.body?.tool === "openclaw_run_command",
+        ).length,
       ).toBe(1);
     },
     testTimeoutMs,
@@ -322,7 +348,10 @@ describe("OpenClaw bridge integration", () => {
     async () => {
       const response = await requestJson(proxyBaseUrl, "/openclaw/invoke", {
         method: "POST",
-        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "application/json",
+        },
         body: JSON.stringify({
           tool: "openclaw_node_status",
           nodeId: "error-node",
@@ -336,7 +365,9 @@ describe("OpenClaw bridge integration", () => {
         ok: false,
         code: "gateway_error",
       });
-      expect(String(response.body.error)).toContain("OpenClaw gateway returned HTTP 500");
+      expect(String(response.body.error)).toContain(
+        "OpenClaw gateway returned HTTP 500",
+      );
     },
     testTimeoutMs,
   );

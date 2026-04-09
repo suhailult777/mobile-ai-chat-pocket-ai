@@ -83,8 +83,7 @@ function estimateTokenCount(text: string): number {
 
 function getOpenClawErrorCode(text?: string): string {
   return (
-    text?.match(/openclaw error(?:\s*\[([^\]]+)\])?/i)?.[1]?.toLowerCase() ||
-    ""
+    text?.match(/openclaw error(?:\s*\[([^\]]+)\])?/i)?.[1]?.toLowerCase() || ""
   );
 }
 
@@ -482,7 +481,8 @@ export default function ChatScreen() {
   const [showSkeleton, setShowSkeleton] = useState(false);
   const [selectedModel, setSelectedModel] = useState<string | null>(null);
   const [fallbackUsed, setFallbackUsed] = useState(false);
-  const [executionStatus, setExecutionStatus] = useState<AgentExecutionStatus | null>(null);
+  const [executionStatus, setExecutionStatus] =
+    useState<AgentExecutionStatus | null>(null);
 
   const listRef = useRef<FlashListRef<UIMessage>>(null);
   const streamRef = useRef<{ cancel: () => void } | null>(null);

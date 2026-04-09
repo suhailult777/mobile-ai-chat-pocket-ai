@@ -437,7 +437,12 @@ export function streamNative(
   ): AgentExecutionStatus => {
     const lower = resultText.toLowerCase();
     if (lower.includes("replayed")) {
-      return { state: "replayed", tool: toolName, detail: resultText, replayed: true };
+      return {
+        state: "replayed",
+        tool: toolName,
+        detail: resultText,
+        replayed: true,
+      };
     }
     if (
       lower.includes("denied by policy") ||
@@ -621,9 +626,17 @@ export function streamNative(
               state: openclawTool ? "executing_on_node" : "awaiting_approval",
               tool: toolCall.name,
               nodeId: openclawTool
-                ? opts.openclawNodeId || String(toolCall.arguments?.node_id || toolCall.arguments?.nodeId || "") || undefined
+                ? opts.openclawNodeId ||
+                  String(
+                    toolCall.arguments?.node_id ||
+                      toolCall.arguments?.nodeId ||
+                      "",
+                  ) ||
+                  undefined
                 : undefined,
-              detail: openclawTool ? "Executing via OpenClaw bridge" : "Executing tool",
+              detail: openclawTool
+                ? "Executing via OpenClaw bridge"
+                : "Executing tool",
             });
             const toolResult = await ToolExecutor.executeParsedToolCall(
               toolCall,
@@ -654,7 +667,9 @@ export function streamNative(
               },
             ];
             emitStatus({
-              state: /denied|forbidden/i.test(String(toolErr?.message || toolErr))
+              state: /denied|forbidden/i.test(
+                String(toolErr?.message || toolErr),
+              )
                 ? "denied_by_policy"
                 : /loop/i.test(String(toolErr?.message || toolErr))
                   ? "loop_detected"

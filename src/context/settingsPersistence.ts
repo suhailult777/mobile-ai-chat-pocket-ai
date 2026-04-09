@@ -64,7 +64,10 @@ export function normalizeStoredSettings(
       raw.openclawEnabled,
       defaults.openclawEnabled,
     ),
-    openclawNodeId: getStringSnapshot(raw.openclawNodeId, defaults.openclawNodeId),
+    openclawNodeId: getStringSnapshot(
+      raw.openclawNodeId,
+      defaults.openclawNodeId,
+    ),
     turboMode: getBooleanSnapshot(raw.turboMode, defaults.turboMode),
     draftModel: getStringSnapshot(raw.draftModel, defaults.draftModel),
   };
