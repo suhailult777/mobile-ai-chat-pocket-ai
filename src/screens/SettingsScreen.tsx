@@ -10,7 +10,11 @@ import {
 } from "react-native";
 import { SettingsContext } from "../context/SettingsContext";
 import { getModelsProvider, pingProvider } from "../lib/providerRouter";
-import { pingOpenClawBridge } from "../lib/toolExecutor";
+import {
+  fetchOpenClawNodes,
+  pingOpenClawBridge,
+  type OpenClawNodeInfo,
+} from "../lib/toolExecutor";
 import {
   getModelsDirNative,
   isNativeAvailable,
@@ -54,6 +58,7 @@ export default function SettingsScreen() {
 
   const [status, setStatus] = useState<string>("");
   const [nativeInfo, setNativeInfo] = useState<string>("");
+  const [openclawNodes, setOpenclawNodes] = useState<OpenClawNodeInfo[]>([]);
   const [showBrowser, setShowBrowser] = useState(false);
   const [browserFiles, setBrowserFiles] = useState<string[]>([]);
   const [modelsDir, setModelsDir] = useState<string>("");
@@ -98,6 +103,27 @@ export default function SettingsScreen() {
       setStatus(ok ? "OpenClaw bridge OK" : "OpenClaw bridge unreachable");
     } catch (e: any) {
       setStatus(`OpenClaw bridge error: ${e?.message || String(e)}`);
+    }
+  };
+
+  const onListOpenClawNodes = async () => {
+    if (!openclawEnabled) {
+      setStatus("Enable OpenClaw first");
+      return;
+    }
+
+    setStatus("Listing OpenClaw nodes…");
+    try {
+      const result = await fetchOpenClawNodes(baseUrl);
+      setOpenclawNodes(result.nodes);
+      if (result.nodes.length > 0) {
+        setStatus(`Found ${result.nodes.length} OpenClaw node(s)`);
+      } else {
+        setStatus("No paired OpenClaw nodes found");
+      }
+    } catch (e: any) {
+      setOpenclawNodes([]);
+      setStatus(`OpenClaw node list error: ${e?.message || String(e)}`);
     }
   };
 
@@ -276,7 +302,34 @@ export default function SettingsScreen() {
                   >
                     <Text style={styles.buttonText}>Test Bridge</Text>
                   </TouchableOpacity>
+                  <TouchableOpacity
+                    onPress={onListOpenClawNodes}
+                    style={[styles.button, styles.secondary]}
+                  >
+                    <Text style={styles.buttonText}>List Nodes</Text>
+                  </TouchableOpacity>
                 </View>
+                {openclawNodes.length > 0 ? (
+                  <View style={styles.browserPanel}>
+                    <Text style={styles.hintSmall}>Paired OpenClaw nodes:</Text>
+                    {openclawNodes.map((node) => (
+                      <TouchableOpacity
+                        key={node.id}
+                        onPress={() => {
+                          setOpenclawNodeId(node.id);
+                          setStatus(`Selected node ID: ${node.id}`);
+                        }}
+                        style={styles.fileItem}
+                      >
+                        <Text style={styles.fileText}>{node.name}</Text>
+                        <Text style={styles.hintSmall}>
+                          ID: {node.id}
+                          {node.status ? ` • ${node.status}` : ""}
+                        </Text>
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+                ) : null}
               </>
             ) : (
               <Text style={styles.hintSmall}>

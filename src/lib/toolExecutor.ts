@@ -42,6 +42,28 @@ export type OpenClawExecutionOptions = {
   openclawEnabled?: boolean;
 };
 
+export type OpenClawNodeInfo = {
+  id: string;
+  name: string;
+  status?: string;
+  raw: any;
+};
+
+export type AgentExecutionStatus = {
+  state:
+    | "awaiting_approval"
+    | "executing_on_node"
+    | "denied_by_policy"
+    | "replayed"
+    | "loop_detected"
+    | "error"
+    | "idle";
+  tool?: ToolName | string;
+  detail?: string;
+  nodeId?: string;
+  replayed?: boolean;
+};
+
 const WEB_TOOL_SCHEMAS: ToolSchema[] = [
   {
     type: "function",
@@ -134,7 +156,7 @@ const OPENCLAW_TOOL_SCHEMAS: ToolSchema[] = [
     function: {
       name: "openclaw_run_command",
       description:
-        "Run a controlled command on the selected OpenClaw node. Use only when the user explicitly asks for a PC action and prefer the smallest safe command that satisfies the request.",
+        "Run a controlled command on the selected OpenClaw node. In this rollout only a small read-only allowlist is permitted; shell chaining and destructive commands are rejected by the bridge.",
       parameters: {
         type: "object",
         properties: {
@@ -196,7 +218,7 @@ export function buildToolSystemPrompt(opts: ToolPromptOptions = {}): string {
   return [
     "You can use tools to answer user questions when needed.",
     opts.openclawEnabled
-      ? "OpenClaw tools are available for controlled PC and node operations. Use read-only tools first, obey approvals and policy, and prefer the target node from settings when a node_id is not supplied."
+      ? "OpenClaw tools are available for controlled PC and node operations. Use read-only tools first, stay inside the command allowlist, obey approvals and policy, and prefer the target node from settings when a node_id is not supplied."
       : "OpenClaw tools are not available in this session.",
     "Available tools:",
     JSON.stringify(schemas, null, 2),
@@ -289,6 +311,27 @@ export function normalizeToolCallSignature(call: ParsedToolCall): string {
   return `${call.name}:${stableStringify(call.arguments || {})}`;
 }
 
+export type ToolLoopState = {
+  lastSignature: string | null;
+  repeatedCount: number;
+  loopDetected: boolean;
+};
+
+export function advanceToolLoopState(
+  state: Pick<ToolLoopState, "lastSignature" | "repeatedCount">,
+  signature: string,
+  maxRepeatedToolCalls: number,
+): ToolLoopState {
+  const repeatedCount =
+    signature === state.lastSignature ? state.repeatedCount + 1 : 1;
+
+  return {
+    lastSignature: signature,
+    repeatedCount,
+    loopDetected: repeatedCount >= maxRepeatedToolCalls,
+  };
+}
+
 function createReplayKey(signature: string, windowMs = 5000): string {
   const bucket = Math.floor(Date.now() / windowMs);
   return `${signature}::${bucket}`;
@@ -328,53 +371,84 @@ async function fetchWithTimeout(
   }
 }
 
-async function invokeOpenClawBridge(
-  baseUrl: string,
-  payload: Record<string, any>,
-): Promise<string> {
-  const normalizedBase = normalizeBaseUrl(baseUrl);
-  if (!normalizedBase) {
-    return "openclaw error: bridge baseUrl is required";
-  }
+function formatOpenClawErrorText(
+  detail: string,
+  code?: string,
+  status?: number,
+): string {
+  const normalizedCode = code ? ` [${code}]` : "";
+  const normalizedStatus = typeof status === "number" ? ` HTTP ${status}` : "";
+  return `openclaw error${normalizedCode}:${normalizedStatus} ${detail}`.trim();
+}
 
-  const res = await fetchWithTimeout(
-    `${normalizedBase}/openclaw/invoke`,
-    15000,
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Accept: "application/json",
-      },
-      body: JSON.stringify(payload),
-    },
-  );
-
-  const body = await parseResponseBody(res);
-
-  if (!res.ok) {
-    const detail =
-      (body && typeof body === "object" && (body.error || body.details)) ||
-      (typeof body === "string" ? body : res.statusText) ||
-      "Unknown error";
-    return `openclaw error: upstream returned HTTP ${res.status}: ${detail}`;
-  }
+function formatOpenClawResultText(body: any): string {
+  const replaySuffix = body?.replayed === true ? " replayed" : "";
+  const resultPrefix = `openclaw${replaySuffix} result`;
 
   if (typeof body === "string") {
-    return buildToolResultText("openclaw", body);
+    return `${resultPrefix}: ${body}`;
   }
 
   if (body && typeof body === "object") {
     if (typeof body.output === "string") {
-      return buildToolResultText("openclaw", body.output);
+      return `${resultPrefix}: ${body.output}`;
+    }
+    if (typeof body.result === "string") {
+      return `${resultPrefix}: ${body.result}`;
     }
     if (body.result !== undefined) {
-      return buildToolResultText("openclaw", body.result);
+      return `${resultPrefix}: ${JSON.stringify(body.result, null, 2)}`;
     }
-    return buildToolResultText("openclaw", body);
+    return `${resultPrefix}: ${JSON.stringify(body, null, 2)}`;
   }
 
-  return "openclaw result: (empty response)";
+  return `${resultPrefix}: (empty response)`;
+}
+
+async function invokeOpenClawBridge(
+  baseUrl: string,
+  payload: Record<string, any>,
+): Promise<string> {
+  try {
+    const normalizedBase = normalizeBaseUrl(baseUrl);
+    if (!normalizedBase) {
+      return formatOpenClawErrorText("bridge baseUrl is required", "missing_base_url");
+    }
+
+    const res = await fetchWithTimeout(
+      `${normalizedBase}/openclaw/invoke`,
+      15000,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "application/json",
+        },
+        body: JSON.stringify(payload),
+      },
+    );
+
+    const body = await parseResponseBody(res);
+
+    if (!res.ok) {
+      const detail =
+        (body && typeof body === "object" && (body.error || body.details)) ||
+        (typeof body === "string" ? body : res.statusText) ||
+        "Unknown error";
+      const errorCode =
+        (body && typeof body === "object" && (body.code || body.errorCode)) ||
+        `http_${res.status}`;
+      return formatOpenClawErrorText(detail, errorCode, res.status);
+    }
+
+    return formatOpenClawResultText(body);
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    const errorCode =
+      (error as any)?.code ||
+      ((error as any)?.status === 504 ? "gateway_timeout" : "gateway_unreachable");
+    return formatOpenClawErrorText(detail, errorCode, (error as any)?.status);
+  }
 }
 
 export async function pingOpenClawBridge(baseUrl: string): Promise<boolean> {
@@ -394,6 +468,150 @@ export async function pingOpenClawBridge(baseUrl: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+function extractOpenClawNodeEntries(payload: any): any[] {
+  if (!payload) return [];
+  if (Array.isArray(payload)) return payload;
+  if (typeof payload === "string") {
+    const parsed = safeParseJson(payload);
+    return parsed ? extractOpenClawNodeEntries(parsed) : [];
+  }
+  if (typeof payload !== "object") return [];
+
+  const entries: any[] = [];
+  const arrayKeys = [
+    "nodes",
+    "items",
+    "data",
+    "results",
+    "pairedNodes",
+    "nodeList",
+  ];
+  for (const key of arrayKeys) {
+    if (Array.isArray((payload as any)[key])) {
+      entries.push(...(payload as any)[key]);
+    }
+  }
+
+  const nestedCandidates = [
+    (payload as any).node,
+    (payload as any).item,
+    (payload as any).data?.node,
+    (payload as any).data?.item,
+  ];
+
+  for (const candidate of nestedCandidates) {
+    if (candidate) entries.push(candidate);
+  }
+
+  if (entries.length > 0) return entries;
+
+  const idCandidate =
+    (payload as any).id ||
+    (payload as any).node_id ||
+    (payload as any).nodeId ||
+    (payload as any).name;
+  return idCandidate ? [payload] : [];
+}
+
+function normalizeOpenClawNode(raw: any): OpenClawNodeInfo | null {
+  if (!raw || typeof raw !== "object") return null;
+
+  const rawId =
+    raw.node_id ??
+    raw.nodeId ??
+    raw.id ??
+    raw.uuid ??
+    raw.identifier ??
+    raw.name;
+  const id = String(rawId || "").trim();
+  if (!id) return null;
+
+  const name = String(
+    raw.name ??
+      raw.label ??
+      raw.hostname ??
+      raw.display_name ??
+      raw.displayName ??
+      raw.title ??
+      id,
+  ).trim();
+  const statusValue =
+    raw.status ??
+    raw.state ??
+    raw.connection_status ??
+    raw.connected ??
+    raw.online;
+  const status =
+    typeof statusValue === "string"
+      ? statusValue
+      : typeof statusValue === "boolean"
+        ? statusValue
+          ? "online"
+          : "offline"
+        : statusValue == null
+          ? undefined
+          : String(statusValue);
+
+  return {
+    id,
+    name: name || id,
+    status,
+    raw,
+  };
+}
+
+export function normalizeOpenClawNodes(payload: any): OpenClawNodeInfo[] {
+  const entries = extractOpenClawNodeEntries(payload);
+  const nodes: OpenClawNodeInfo[] = [];
+  const seen = new Set<string>();
+
+  for (const entry of entries) {
+    const node = normalizeOpenClawNode(entry);
+    if (!node || seen.has(node.id)) continue;
+    seen.add(node.id);
+    nodes.push(node);
+  }
+
+  return nodes;
+}
+
+export async function fetchOpenClawNodes(
+  baseUrl: string,
+): Promise<{ nodes: OpenClawNodeInfo[]; raw: any }> {
+  const normalizedBase = normalizeBaseUrl(baseUrl);
+  if (!normalizedBase) {
+    throw new Error("openclaw bridge baseUrl is required");
+  }
+
+  const res = await fetchWithTimeout(
+    `${normalizedBase}/openclaw/nodes`,
+    10000,
+    {
+      method: "GET",
+      headers: { Accept: "application/json" },
+    },
+  );
+  const body = await parseResponseBody(res);
+
+  if (!res.ok) {
+    const detail =
+      (body && typeof body === "object" && (body.error || body.details)) ||
+      (typeof body === "string" ? body : res.statusText) ||
+      "Unknown error";
+    const error = new Error(
+      `openclaw nodes request failed HTTP ${res.status}: ${detail}`,
+    );
+    (error as any).status = res.status;
+    (error as any).details = body;
+    throw error;
+  }
+
+  return {
+    nodes: normalizeOpenClawNodes(body),
+    raw: body,
+  };
 }
 
 export async function executeParsedToolCall(

@@ -38,6 +38,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { SettingsContext } from "../context/SettingsContext";
 import type { ChatMessage } from "../lib/ollamaClient";
+import type { AgentExecutionStatus } from "../lib/toolExecutor";
 import {
   streamProvider,
   pingProvider,
@@ -78,6 +79,157 @@ function estimateTokenCount(text: string): number {
   const trimmed = text.trim();
   if (!trimmed) return 0;
   return Math.max(1, Math.round(trimmed.length / 4));
+}
+
+function getOpenClawErrorCode(text?: string): string {
+  return (
+    text?.match(/openclaw error(?:\s*\[([^\]]+)\])?/i)?.[1]?.toLowerCase() ||
+    ""
+  );
+}
+
+function formatChatErrorMessage(err: unknown): string {
+  const raw = String((err as any)?.message || err || "").trim();
+  const lower = raw.toLowerCase();
+  const openClawErrorCode = getOpenClawErrorCode(raw);
+
+  if (
+    openClawErrorCode === "missing_node_id" ||
+    openClawErrorCode === "unknown_node_id" ||
+    openClawErrorCode === "no_paired_nodes" ||
+    lower.includes("node_id is required") ||
+    lower.includes("no paired openclaw nodes are available")
+  ) {
+    return "Select a paired OpenClaw node in Settings, then try again.";
+  }
+
+  if (
+    openClawErrorCode === "command_denied" ||
+    lower.includes("denied by policy") ||
+    lower.includes("forbidden")
+  ) {
+    return "OpenClaw blocked that action. Try a safer command or a read-only request.";
+  }
+
+  if (
+    openClawErrorCode === "gateway_unreachable" ||
+    openClawErrorCode === "gateway_timeout" ||
+    openClawErrorCode === "missing_gateway_token" ||
+    lower.includes("openclaw gateway")
+  ) {
+    return "OpenClaw gateway unreachable. Check the server, gateway URL, and token.";
+  }
+
+  if (lower.includes("cannot reach nvidia proxy")) {
+    return "Proxy server unreachable. Check the host and port in Settings.";
+  }
+
+  if (lower.includes("native module not ready")) {
+    return "Native mode is not ready yet. Rebuild the dev client or switch to proxy mode.";
+  }
+
+  if (lower.includes("model is still loading")) {
+    return "The model is still loading. Try again in a moment.";
+  }
+
+  if (lower.includes("timeout")) {
+    return "The request timed out. Please retry.";
+  }
+
+  return raw || "Something went wrong. Please try again.";
+}
+
+type ExecutionStatusPresentation = {
+  label: string;
+  detail?: string;
+  tone: "neutral" | "info" | "warning" | "danger";
+};
+
+function getExecutionStatusPresentation(
+  status: AgentExecutionStatus | null,
+): ExecutionStatusPresentation | null {
+  if (!status || status.state === "idle") return null;
+
+  const toolDetail = status.tool ? `Tool • ${status.tool}` : undefined;
+  const nodeDetail = status.nodeId ? `Node • ${status.nodeId}` : undefined;
+  const detailText = (status.detail || "").toLowerCase();
+  const openClawErrorCode = getOpenClawErrorCode(status.detail);
+
+  switch (status.state) {
+    case "awaiting_approval":
+      return {
+        label: "Awaiting approval",
+        detail: toolDetail || status.detail,
+        tone: "warning",
+      };
+    case "executing_on_node":
+      return {
+        label: "OpenClaw bridge",
+        detail: nodeDetail || toolDetail || status.detail,
+        tone: "info",
+      };
+    case "denied_by_policy":
+      return {
+        label: "Blocked by policy",
+        detail: toolDetail || status.detail,
+        tone: "danger",
+      };
+    case "replayed":
+      return {
+        label: "Replay deduped",
+        detail: toolDetail || status.detail,
+        tone: "neutral",
+      };
+    case "loop_detected":
+      return {
+        label: "Loop detected",
+        detail: toolDetail || status.detail,
+        tone: "danger",
+      };
+    case "error":
+      if (
+        detailText.includes("timeout") ||
+        openClawErrorCode === "gateway_timeout"
+      ) {
+        return {
+          label: "Timed out",
+          detail: toolDetail || status.detail,
+          tone: "warning",
+        };
+      }
+      if (
+        openClawErrorCode === "missing_node_id" ||
+        openClawErrorCode === "unknown_node_id" ||
+        openClawErrorCode === "no_paired_nodes"
+      ) {
+        return {
+          label: "Node unavailable",
+          detail: toolDetail || status.detail,
+          tone: "warning",
+        };
+      }
+      if (
+        openClawErrorCode === "gateway_unreachable" ||
+        openClawErrorCode === "missing_gateway_token"
+      ) {
+        return {
+          label: "Bridge unavailable",
+          detail: toolDetail || status.detail,
+          tone: "danger",
+        };
+      }
+      return {
+        label: "Tool error",
+        detail: toolDetail || status.detail,
+        tone: "danger",
+      };
+    default:
+      return {
+        label: status.tool ? `Working • ${status.tool}` : "Working",
+        detail: status.detail || nodeDetail,
+        tone: "neutral",
+      };
+  }
 }
 
 // --- Components ---
@@ -174,6 +326,7 @@ const ChatListFooter = React.memo(function ChatListFooter({
   selectedModel,
   fallbackUsed,
   streamingHandle,
+  executionStatus,
 }: {
   showSkeleton: boolean;
   isStreaming: boolean;
@@ -181,6 +334,7 @@ const ChatListFooter = React.memo(function ChatListFooter({
   selectedModel: string | null;
   fallbackUsed: boolean;
   streamingHandle: ReturnType<typeof useStreamingText>;
+  executionStatus: AgentExecutionStatus | null;
 }) {
   const [streamingText, setStreamingText] = useState("");
 
@@ -205,6 +359,7 @@ const ChatListFooter = React.memo(function ChatListFooter({
     return null;
   })();
   const isToolCallActive = activeToolName !== null;
+  const executionStatusView = getExecutionStatusPresentation(executionStatus);
 
   const statusBadge = isStreaming ? (
     <View style={styles.streamingStatusWrap}>
@@ -212,6 +367,39 @@ const ChatListFooter = React.memo(function ChatListFooter({
         <GeneratingDots />
         <Text style={styles.streamingStatusText}>
           Generating • ~{tokenCount} tokens
+        </Text>
+      </View>
+    </View>
+  ) : null;
+
+  const executionStatusBadge = executionStatusView ? (
+    <View style={styles.streamingStatusWrap}>
+      <View
+        style={[
+          styles.executionStatusBadge,
+          executionStatusView.tone === "danger"
+            ? styles.executionStatusBadgeDanger
+            : executionStatusView.tone === "warning"
+              ? styles.executionStatusBadgeWarning
+              : executionStatusView.tone === "info"
+                ? styles.executionStatusBadgeInfo
+                : styles.executionStatusBadgeNeutral,
+        ]}
+      >
+        <Text
+          style={[
+            styles.executionStatusText,
+            executionStatusView.tone === "danger"
+              ? styles.executionStatusTextDanger
+              : executionStatusView.tone === "warning"
+                ? styles.executionStatusTextWarning
+                : executionStatusView.tone === "info"
+                  ? styles.executionStatusTextInfo
+                  : styles.executionStatusTextNeutral,
+          ]}
+        >
+          {executionStatusView.label}
+          {executionStatusView.detail ? `\n${executionStatusView.detail}` : ""}
         </Text>
       </View>
     </View>
@@ -245,6 +433,7 @@ const ChatListFooter = React.memo(function ChatListFooter({
   if (showSkeleton) {
     return (
       <View style={{ paddingBottom: 16 }}>
+        {executionStatusBadge}
         {statusBadge}
         {toolBadge}
         {modelBadge}
@@ -256,6 +445,7 @@ const ChatListFooter = React.memo(function ChatListFooter({
   if (isStreaming) {
     return (
       <View style={{ paddingBottom: 16 }}>
+        {executionStatusBadge}
         {statusBadge}
         {toolBadge}
         {modelBadge}
@@ -292,6 +482,7 @@ export default function ChatScreen() {
   const [showSkeleton, setShowSkeleton] = useState(false);
   const [selectedModel, setSelectedModel] = useState<string | null>(null);
   const [fallbackUsed, setFallbackUsed] = useState(false);
+  const [executionStatus, setExecutionStatus] = useState<AgentExecutionStatus | null>(null);
 
   const listRef = useRef<FlashListRef<UIMessage>>(null);
   const streamRef = useRef<{ cancel: () => void } | null>(null);
@@ -427,8 +618,9 @@ export default function ChatScreen() {
   }, [settings.mode, settings.model]);
 
   // --- Scroll Logic (throttled) ---
-  const handleScrollRaw = useCallback((e: any) => {
-    const { contentOffset, layoutMeasurement, contentSize } = e.nativeEvent;
+  const handleScrollRaw = useCallback((nativeEvent: any) => {
+    if (!nativeEvent) return;
+    const { contentOffset, layoutMeasurement, contentSize } = nativeEvent;
     const paddingToBottom = 100;
     nearBottomRef.current =
       layoutMeasurement.height + contentOffset.y >=
@@ -467,6 +659,7 @@ export default function ChatScreen() {
     }
 
     setError(null);
+    setExecutionStatus(null);
     Keyboard.dismiss();
 
     const userMsg = makeMessage("user", currentInput);
@@ -498,7 +691,7 @@ export default function ChatScreen() {
         );
       }
     } catch (e: any) {
-      setError(e.message);
+      setError(formatChatErrorMessage(e));
       setShowSkeleton(false);
       return;
     }
@@ -534,12 +727,16 @@ export default function ChatScreen() {
           setFallbackUsed(meta.fallbackUsed);
         }
       },
+      onStatus: (status) => {
+        setExecutionStatus(status);
+      },
       onError: (e) => {
-        setError(String(e?.message || e));
+        setError(formatChatErrorMessage(e));
         setIsStreaming(false);
         setShowSkeleton(false);
         setSelectedModel(null);
         setFallbackUsed(false);
+        setExecutionStatus(null);
         // Commit any partial content to messages
         const partialContent = streamingHandle.getText();
         if (partialContent) {
@@ -559,6 +756,7 @@ export default function ChatScreen() {
         setShowSkeleton(false);
         setSelectedModel(null);
         setFallbackUsed(false);
+        setExecutionStatus(null);
         streamingHandle.clear();
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       },
@@ -569,6 +767,8 @@ export default function ChatScreen() {
     isStreaming,
     settings.mode,
     settings.agentMode,
+    settings.openclawEnabled,
+    settings.openclawNodeId,
     settings.turboMode,
     settings.draftModel,
     baseUrl,
@@ -591,6 +791,7 @@ export default function ChatScreen() {
     }
     setIsStreaming(false);
     setShowSkeleton(false);
+    setExecutionStatus(null);
     streamingHandle.clear();
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
   }, [streamingHandle, makeMessage]);
@@ -709,7 +910,7 @@ export default function ChatScreen() {
         getItemType={(item) => item.role}
         contentContainerStyle={FLASH_LIST_CONTENT_STYLE}
         keyboardDismissMode="on-drag"
-        onScroll={handleScroll}
+        onScroll={(e) => handleScroll(e.nativeEvent)}
         scrollEventThrottle={100}
         keyboardShouldPersistTaps="handled"
         ListFooterComponent={
@@ -720,6 +921,7 @@ export default function ChatScreen() {
             selectedModel={selectedModel}
             fallbackUsed={fallbackUsed}
             streamingHandle={streamingHandle}
+            executionStatus={executionStatus}
           />
         }
       />
@@ -921,6 +1123,49 @@ const styles = StyleSheet.create({
     color: COLORS.textPrimary,
     fontSize: 12,
     fontWeight: "600",
+  },
+  executionStatusBadge: {
+    flexDirection: "column",
+    alignItems: "flex-start",
+    gap: 2,
+    borderWidth: 1,
+    borderRadius: 12,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    maxWidth: "100%",
+  },
+  executionStatusBadgeNeutral: {
+    backgroundColor: COLORS.surfaceFiltered,
+    borderColor: COLORS.border,
+  },
+  executionStatusBadgeInfo: {
+    backgroundColor: "#173041",
+    borderColor: "#4D7290",
+  },
+  executionStatusBadgeWarning: {
+    backgroundColor: "#1E232B",
+    borderColor: "#5B6472",
+  },
+  executionStatusBadgeDanger: {
+    backgroundColor: "#2A1B1B",
+    borderColor: "#7A4B4B",
+  },
+  executionStatusText: {
+    fontSize: 12,
+    fontWeight: "600",
+    lineHeight: 16,
+  },
+  executionStatusTextNeutral: {
+    color: COLORS.textSecondary,
+  },
+  executionStatusTextInfo: {
+    color: COLORS.accent,
+  },
+  executionStatusTextWarning: {
+    color: "#D6E3F5",
+  },
+  executionStatusTextDanger: {
+    color: "#F0C9C9",
   },
   modelStatusBadge: {
     flexDirection: "row",

@@ -1,5 +1,6 @@
 import type { ChatMessage, StreamHandle } from "./ollamaClient";
 import { getToolSchemas } from "./toolExecutor";
+import type { AgentExecutionStatus } from "./toolExecutor";
 
 export type NvidiaProxyStreamOptions = {
   baseUrl: string;
@@ -14,6 +15,7 @@ export type NvidiaProxyStreamOptions = {
     selectedModel?: string;
     fallbackUsed?: boolean;
   }) => void;
+  onStatus?: (status: AgentExecutionStatus) => void;
   onError?: (err: any) => void;
   onDone?: () => void;
 };
@@ -43,6 +45,10 @@ export function streamNvidiaProxy(
     if (doneSignaled) return;
     doneSignaled = true;
     opts.onDone?.();
+  };
+
+  const emitStatus = (status: AgentExecutionStatus) => {
+    opts.onStatus?.(status);
   };
 
   const body = JSON.stringify({
@@ -107,6 +113,9 @@ export function streamNvidiaProxy(
                 : undefined,
           });
         }
+        if (obj?.tool_status && typeof obj.tool_status === "object") {
+          emitStatus(obj.tool_status as AgentExecutionStatus);
+        }
         emitTokenFromObject(obj);
       } catch {
         // ignore malformed partial lines
@@ -119,6 +128,9 @@ export function streamNvidiaProxy(
       if (obj?.done === true) {
         signalDone();
         return;
+      }
+      if (obj?.tool_status && typeof obj.tool_status === "object") {
+        emitStatus(obj.tool_status as AgentExecutionStatus);
       }
       emitTokenFromObject(obj);
     } catch {

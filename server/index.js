@@ -1,6 +1,10 @@
 import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
+import {
+    createOpenClawIdempotencyKey,
+    isDangerousOpenClawCommand,
+} from "./openclawPolicy.js";
 
 dotenv.config();
 
@@ -114,6 +118,12 @@ const OPENCLAW_GATEWAY_URL = normalizeGatewayUrl(
 );
 const OPENCLAW_GATEWAY_TOKEN = process.env.OPENCLAW_GATEWAY_TOKEN || "";
 const OPENCLAW_REPLAY_WINDOW_MS = Number(process.env.OPENCLAW_REPLAY_WINDOW_MS || 5000);
+const OPENCLAW_GATEWAY_TIMEOUT_MS = Number(process.env.OPENCLAW_GATEWAY_TIMEOUT_MS || 15000);
+const OPENCLAW_ALLOWED_TOOLS = new Set([
+    "openclaw_list_nodes",
+    "openclaw_node_status",
+    "openclaw_run_command",
+]);
 const OPENCLAW_NODE_STATUS_TOOL = {
     type: "function",
     function: {
@@ -150,7 +160,7 @@ const OPENCLAW_RUN_COMMAND_TOOL = {
     function: {
         name: "openclaw_run_command",
         description:
-            "Run a controlled command on the selected OpenClaw node. Use only when the user explicitly asks for a PC action and prefer the smallest safe command that satisfies the request.",
+            "Run a controlled command on the selected OpenClaw node. In this rollout only a small read-only allowlist is permitted; shell chaining and destructive commands are rejected by the bridge.",
         parameters: {
             type: "object",
             properties: {
@@ -175,15 +185,6 @@ const OPENCLAW_RUN_COMMAND_TOOL = {
         },
     },
 };
-const OPENCLAW_RUN_COMMAND_DENY_PATTERNS = [
-    /(^|\s)rm\s+-rf(\s|$)/i,
-    /(^|\s)format(\s|$)/i,
-    /(^|\s)shutdown(\s|$)/i,
-    /(^|\s)reboot(\s|$)/i,
-    /(^|\s)mkfs(\s|$)/i,
-    /(^|\s)del(\s|$)/i,
-    /:\(\)\{:\|:&\};:/i,
-];
 const openclawReplayCache = new Map();
 
 function getAgentTools(openclawEnabled) {
@@ -194,12 +195,6 @@ function getAgentTools(openclawEnabled) {
 
 function normalizeGatewayUrl(input) {
     return String(input || "").trim().replace(/\/$/, "");
-}
-
-function isDangerousOpenClawCommand(command) {
-    const text = String(command || "").trim();
-    if (!text) return true;
-    return OPENCLAW_RUN_COMMAND_DENY_PATTERNS.some((pattern) => pattern.test(text));
 }
 
 function getReplayCacheEntry(idempotencyKey) {
@@ -281,6 +276,114 @@ function extractTextToolCall(content) {
     };
 }
 
+function normalizeOpenClawNodeEntry(raw) {
+    if (!raw || typeof raw !== "object") return null;
+
+    const rawId =
+        raw.node_id ??
+        raw.nodeId ??
+        raw.id ??
+        raw.uuid ??
+        raw.identifier ??
+        raw.name;
+    const id = String(rawId || "").trim();
+    if (!id) return null;
+
+    const name = String(
+        raw.name ??
+        raw.label ??
+        raw.hostname ??
+        raw.display_name ??
+        raw.displayName ??
+        raw.title ??
+        id,
+    ).trim();
+    const statusValue =
+        raw.status ?? raw.state ?? raw.connection_status ?? raw.connected ?? raw.online;
+    const status =
+        typeof statusValue === "string"
+            ? statusValue
+            : typeof statusValue === "boolean"
+                ? statusValue
+                    ? "online"
+                    : "offline"
+                : statusValue == null
+                    ? undefined
+                    : String(statusValue);
+
+    return {
+        id,
+        name: name || id,
+        status,
+        raw,
+    };
+}
+
+function normalizeOpenClawNodes(payload) {
+    if (!payload) return [];
+    if (Array.isArray(payload)) {
+        return payload.map(normalizeOpenClawNodeEntry).filter(Boolean);
+    }
+    if (typeof payload === "string") {
+        const parsed = safeParseJson(payload);
+        return parsed ? normalizeOpenClawNodes(parsed) : [];
+    }
+    if (typeof payload !== "object") return [];
+
+    const entries = [];
+    const arrayKeys = ["nodes", "items", "data", "results", "pairedNodes", "nodeList"];
+    for (const key of arrayKeys) {
+        if (Array.isArray(payload[key])) {
+            entries.push(...payload[key]);
+        }
+    }
+
+    const nestedCandidates = [
+        payload.node,
+        payload.item,
+        payload.data?.node,
+        payload.data?.item,
+    ];
+
+    for (const candidate of nestedCandidates) {
+        if (candidate) entries.push(candidate);
+    }
+
+    if (entries.length === 0) {
+        const idCandidate = payload.id || payload.node_id || payload.nodeId || payload.name;
+        if (idCandidate) entries.push(payload);
+    }
+
+    const nodes = [];
+    const seen = new Set();
+    for (const entry of entries) {
+        const node = normalizeOpenClawNodeEntry(entry);
+        if (!node || seen.has(node.id)) continue;
+        seen.add(node.id);
+        nodes.push(node);
+    }
+    return nodes;
+}
+
+async function fetchWithTimeout(url, init, timeoutMs = OPENCLAW_GATEWAY_TIMEOUT_MS) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+        return await fetch(url, { ...(init || {}), signal: controller.signal });
+    } catch (error) {
+        if (error?.name === "AbortError") {
+            const timeoutError = new Error(
+                `OpenClaw gateway request timed out after ${timeoutMs}ms`,
+            );
+            timeoutError.status = 504;
+            throw timeoutError;
+        }
+        throw error;
+    } finally {
+        clearTimeout(timer);
+    }
+}
+
 function buildOpenClawGatewayPayload(tool, args, nodeId, idempotencyKey) {
     return {
         tool,
@@ -310,7 +413,13 @@ async function invokeOpenClawGateway({ tool, args, nodeId, idempotencyKey }) {
         throw error;
     }
 
-    const response = await fetch(`${OPENCLAW_GATEWAY_URL}/tools/invoke`, {
+    if (!OPENCLAW_ALLOWED_TOOLS.has(tool)) {
+        const error = new Error(`Unsupported OpenClaw tool: ${tool}`);
+        error.status = 400;
+        throw error;
+    }
+
+    const response = await fetchWithTimeout(`${OPENCLAW_GATEWAY_URL}/tools/invoke`, {
         method: "POST",
         headers: {
             Authorization: `Bearer ${OPENCLAW_GATEWAY_TOKEN}`,
@@ -342,7 +451,7 @@ async function fetchOpenClawGatewayHealth() {
 
     for (const endpoint of endpoints) {
         try {
-            const response = await fetch(`${OPENCLAW_GATEWAY_URL}${endpoint}`, {
+            const response = await fetchWithTimeout(`${OPENCLAW_GATEWAY_URL}${endpoint}`, {
                 method: "GET",
                 headers: {
                     Authorization: `Bearer ${OPENCLAW_GATEWAY_TOKEN}`,
@@ -355,10 +464,42 @@ async function fetchOpenClawGatewayHealth() {
             }
         } catch (error) {
             console.warn(`[OpenClaw] health check failed on ${endpoint}: ${error?.message || error}`);
+            if (error?.status === 504) {
+                return { ok: false, status: 504, error: error.message };
+            }
         }
     }
 
     return { ok: false };
+}
+
+async function fetchOpenClawGatewayNodes() {
+    const cacheKey = createOpenClawIdempotencyKey(
+        "openclaw_list_nodes",
+        {},
+        OPENCLAW_REPLAY_WINDOW_MS,
+    );
+    const cached = getReplayCacheEntry(cacheKey);
+    if (cached?.value) {
+        return cached.value;
+    }
+
+    const result = await invokeOpenClawGateway({
+        tool: "openclaw_list_nodes",
+        args: {},
+        nodeId: undefined,
+        idempotencyKey: cacheKey,
+    });
+    const nodes = normalizeOpenClawNodes(result);
+    const payload = {
+        ok: true,
+        tool: "openclaw_list_nodes",
+        nodes,
+        count: nodes.length,
+        raw: result,
+    };
+    setReplayCacheEntry(cacheKey, payload);
+    return payload;
 }
 
 function extractWebResults(payload, limit) {
@@ -749,16 +890,14 @@ function normalizeOpenClawToolArgs(rawArgs) {
     return {};
 }
 
-function createOpenClawIdempotencyKey(tool, args) {
-    const signature = JSON.stringify(args || {});
-    const bucket = Math.floor(Date.now() / OPENCLAW_REPLAY_WINDOW_MS);
-    return `${tool}:${signature}:${bucket}`;
-}
-
 async function runOpenClawTool(fnName, rawArgs, defaultNodeId) {
     const args = normalizeOpenClawToolArgs(rawArgs);
     const nodeId = String(args.node_id || args.nodeId || defaultNodeId || "").trim();
-    const idempotencyKey = createOpenClawIdempotencyKey(fnName, args);
+    const idempotencyKey = createOpenClawIdempotencyKey(
+        fnName,
+        args,
+        OPENCLAW_REPLAY_WINDOW_MS,
+    );
 
     if (fnName === "openclaw_list_nodes") {
         const result = await invokeOpenClawGateway({
@@ -943,6 +1082,7 @@ app.get("/openclaw/health", async (_req, res) => {
         if (!OPENCLAW_GATEWAY_TOKEN) {
             res.status(500).json({
                 ok: false,
+                code: "missing_gateway_token",
                 error: "Missing OPENCLAW_GATEWAY_TOKEN in environment",
             });
             return;
@@ -952,6 +1092,7 @@ app.get("/openclaw/health", async (_req, res) => {
         if (!result.ok) {
             res.status(502).json({
                 ok: false,
+                code: "gateway_unhealthy",
                 error: "OpenClaw gateway health check failed",
                 gatewayUrl: OPENCLAW_GATEWAY_URL,
             });
@@ -966,9 +1107,42 @@ app.get("/openclaw/health", async (_req, res) => {
             data: result.data,
         });
     } catch (error) {
-        res.status(500).json({
+        const status = error?.status || 500;
+        res.status(status).json({
             ok: false,
+            code: error?.code || (status === 504 ? "gateway_timeout" : "gateway_error"),
             error: error instanceof Error ? error.message : String(error),
+        });
+    }
+});
+
+app.get("/openclaw/nodes", async (_req, res) => {
+    try {
+        if (!OPENCLAW_GATEWAY_TOKEN) {
+            res.status(500).json({
+                ok: false,
+                code: "missing_gateway_token",
+                error: "Missing OPENCLAW_GATEWAY_TOKEN in environment",
+            });
+            return;
+        }
+
+        const result = await fetchOpenClawGatewayNodes();
+        res.json({
+            ok: true,
+            bridge: "openclaw",
+            gatewayUrl: OPENCLAW_GATEWAY_URL,
+            count: result.count,
+            nodes: result.nodes,
+            raw: result.raw,
+        });
+    } catch (error) {
+        const status = error?.status || 500;
+        res.status(status).json({
+            ok: false,
+            code: error?.code || (status === 504 ? "gateway_timeout" : "gateway_error"),
+            error: error instanceof Error ? error.message : String(error),
+            details: error?.details,
         });
     }
 });
@@ -978,6 +1152,7 @@ app.post("/openclaw/invoke", async (req, res) => {
         if (!OPENCLAW_GATEWAY_TOKEN) {
             res.status(500).json({
                 ok: false,
+                code: "missing_gateway_token",
                 error: "Missing OPENCLAW_GATEWAY_TOKEN in environment",
             });
             return;
@@ -989,12 +1164,17 @@ app.post("/openclaw/invoke", async (req, res) => {
         const idempotencyKey = String(req.body?.idempotencyKey || req.body?.idempotency_key || "").trim();
 
         if (!tool) {
-            res.status(400).json({ ok: false, error: "tool is required" });
+            res.status(400).json({ ok: false, code: "missing_tool", error: "tool is required" });
             return;
         }
 
         if (!idempotencyKey) {
-            res.status(400).json({ ok: false, error: "idempotencyKey is required" });
+            res.status(400).json({ ok: false, code: "missing_idempotency_key", error: "idempotencyKey is required" });
+            return;
+        }
+
+        if (!OPENCLAW_ALLOWED_TOOLS.has(tool)) {
+            res.status(400).json({ ok: false, code: "unsupported_tool", error: `Unsupported OpenClaw tool: ${tool}` });
             return;
         }
 
@@ -1003,8 +1183,8 @@ app.post("/openclaw/invoke", async (req, res) => {
             res.setHeader("x-openclaw-replayed", "true");
             res.json({
                 ok: true,
-                replayed: true,
                 ...cached.value,
+                replayed: true,
             });
             return;
         }
@@ -1012,22 +1192,46 @@ app.post("/openclaw/invoke", async (req, res) => {
         if (tool === "openclaw_run_command") {
             const command = String(args.command || "").trim();
             if (!nodeId) {
-                res.status(400).json({ ok: false, error: "nodeId is required for openclaw_run_command" });
+                res.status(400).json({ ok: false, code: "missing_node_id", error: "nodeId is required for openclaw_run_command" });
                 return;
             }
             if (!command) {
-                res.status(400).json({ ok: false, error: "command is required for openclaw_run_command" });
+                res.status(400).json({ ok: false, code: "missing_command", error: "command is required for openclaw_run_command" });
                 return;
             }
             if (isDangerousOpenClawCommand(command)) {
-                res.status(403).json({ ok: false, error: "OpenClaw command denied by policy" });
+                res.status(403).json({ ok: false, code: "command_denied", error: "OpenClaw command denied by policy" });
                 return;
             }
         }
 
         if ((tool === "openclaw_node_status" || tool === "openclaw_run_command") && !nodeId) {
-            res.status(400).json({ ok: false, error: `nodeId is required for ${tool}` });
+            res.status(400).json({ ok: false, code: "missing_node_id", error: `nodeId is required for ${tool}` });
             return;
+        }
+
+        if (tool === "openclaw_node_status" || tool === "openclaw_run_command") {
+            const discovery = await fetchOpenClawGatewayNodes();
+            if (discovery.nodes.length === 0) {
+                res.status(404).json({
+                    ok: false,
+                    code: "no_paired_nodes",
+                    error: "No paired OpenClaw nodes are available",
+                    nodes: [],
+                });
+                return;
+            }
+
+            const knownNode = discovery.nodes.find((node) => node.id === nodeId);
+            if (!knownNode) {
+                res.status(404).json({
+                    ok: false,
+                    code: "unknown_node_id",
+                    error: `Unknown OpenClaw nodeId: ${nodeId}`,
+                    nodes: discovery.nodes,
+                });
+                return;
+            }
         }
 
         const result = await invokeOpenClawGateway({
@@ -1037,12 +1241,19 @@ app.post("/openclaw/invoke", async (req, res) => {
             idempotencyKey,
         });
 
+        const normalizedNodes =
+            tool === "openclaw_list_nodes" ? normalizeOpenClawNodes(result) : [];
+
         const payload = {
             ok: true,
             replayed: false,
             tool,
             nodeId: nodeId || null,
-            result,
+            result:
+                tool === "openclaw_list_nodes"
+                    ? { nodes: normalizedNodes, raw: result }
+                    : result,
+            nodes: normalizedNodes,
         };
 
         setReplayCacheEntry(idempotencyKey, payload);
@@ -1051,6 +1262,7 @@ app.post("/openclaw/invoke", async (req, res) => {
         const status = error?.status || 500;
         res.status(status).json({
             ok: false,
+            code: error?.code || (status === 504 ? "gateway_timeout" : "gateway_error"),
             error: error instanceof Error ? error.message : String(error),
             details: error?.details,
         });

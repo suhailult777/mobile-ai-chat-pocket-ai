@@ -1,6 +1,7 @@
 import { NativeEventEmitter, NativeModules } from "react-native";
 import { File } from "expo-file-system/next";
 import type { ChatMessage, StreamHandle } from "./ollamaClient";
+import type { AgentExecutionStatus } from "./toolExecutor";
 import * as ToolExecutor from "./nativeToolExecutor";
 
 type StreamCallbacks = {
@@ -10,6 +11,7 @@ type StreamCallbacks = {
     selectedModel?: string;
     fallbackUsed?: boolean;
   }) => void;
+  onStatus?: (status: AgentExecutionStatus) => void;
   onError?: (e: any) => void;
   onDone?: () => void;
 };
@@ -425,6 +427,38 @@ export function streamNative(
   // suffix from `result.text` after completion.
   let emittedText = "";
 
+  const emitStatus = (status: AgentExecutionStatus) => {
+    opts.onStatus?.(status);
+  };
+
+  const classifyToolResultState = (
+    toolName: string,
+    resultText: string,
+  ): AgentExecutionStatus => {
+    const lower = resultText.toLowerCase();
+    if (lower.includes("replayed")) {
+      return { state: "replayed", tool: toolName, detail: resultText, replayed: true };
+    }
+    if (
+      lower.includes("denied by policy") ||
+      lower.includes("command_denied") ||
+      lower.includes("forbidden")
+    ) {
+      return { state: "denied_by_policy", tool: toolName, detail: resultText };
+    }
+    if (
+      lower.startsWith("web_search error:") ||
+      lower.startsWith("fetch_page error:") ||
+      lower.startsWith("openclaw error")
+    ) {
+      return { state: "error", tool: toolName, detail: resultText };
+    }
+    if (lower.includes("timeout")) {
+      return { state: "error", tool: toolName, detail: resultText };
+    }
+    return { state: "idle", tool: toolName, detail: resultText };
+  };
+
   (async () => {
     try {
       const modelPath = opts.model;
@@ -542,16 +576,31 @@ export function streamNative(
             break;
           }
 
+          emitStatus({
+            state: "awaiting_approval",
+            tool: toolCall.name,
+            detail: "Tool call parsed",
+          });
+
           const toolSignature =
             ToolExecutor.normalizeToolCallSignature(toolCall);
-          if (toolSignature === lastToolSignature) {
-            repeatedToolCount += 1;
-          } else {
-            lastToolSignature = toolSignature;
-            repeatedToolCount = 1;
-          }
+          const loopState = ToolExecutor.advanceToolLoopState(
+            {
+              lastSignature: lastToolSignature,
+              repeatedCount: repeatedToolCount,
+            },
+            toolSignature,
+            maxRepeatedToolCalls,
+          );
+          lastToolSignature = loopState.lastSignature;
+          repeatedToolCount = loopState.repeatedCount;
 
-          if (repeatedToolCount >= maxRepeatedToolCalls) {
+          if (loopState.loopDetected) {
+            emitStatus({
+              state: "loop_detected",
+              tool: toolCall.name,
+              detail: `Repeated tool call signature detected ${repeatedToolCount} times`,
+            });
             opts.onError?.(
               new Error(
                 `Tool loop detected for ${toolCall.name} after ${repeatedToolCount} repeated calls`,
@@ -564,6 +613,18 @@ export function streamNative(
 
           opts.onToken(`\n\nTool Call • ${toolCall.name}\n`);
           try {
+            const openclawTool =
+              toolCall.name === "openclaw_list_nodes" ||
+              toolCall.name === "openclaw_node_status" ||
+              toolCall.name === "openclaw_run_command";
+            emitStatus({
+              state: openclawTool ? "executing_on_node" : "awaiting_approval",
+              tool: toolCall.name,
+              nodeId: openclawTool
+                ? opts.openclawNodeId || String(toolCall.arguments?.node_id || toolCall.arguments?.nodeId || "") || undefined
+                : undefined,
+              detail: openclawTool ? "Executing via OpenClaw bridge" : "Executing tool",
+            });
             const toolResult = await ToolExecutor.executeParsedToolCall(
               toolCall,
               {
@@ -572,6 +633,8 @@ export function streamNative(
                 openclawNodeId: opts.openclawNodeId,
               },
             );
+
+            emitStatus(classifyToolResultState(toolCall.name, toolResult));
 
             workingMessages = [
               ...workingMessages,
@@ -590,6 +653,15 @@ export function streamNative(
                 content: `Tool result (${toolCall.name}):\ntool execution error: ${toolErr?.message || toolErr}`,
               },
             ];
+            emitStatus({
+              state: /denied|forbidden/i.test(String(toolErr?.message || toolErr))
+                ? "denied_by_policy"
+                : /loop/i.test(String(toolErr?.message || toolErr))
+                  ? "loop_detected"
+                  : "error",
+              tool: toolCall.name,
+              detail: String(toolErr?.message || toolErr),
+            });
           }
         }
 

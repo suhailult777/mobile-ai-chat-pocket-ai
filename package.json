@@ -13,7 +13,10 @@
     "web": "expo start --web",
     "typecheck": "tsc -p .",
     "lint": "echo \"No lint configured for Phase 1\"",
-    "test": "node -e \"console.log('No tests in Phase 1 yet')\"",
+    "test": "pnpm typecheck && node --check server/index.js",
+    "test:phase6": "vitest run",
+    "test:unit": "vitest run tests/settingsPersistence.test.ts tests/toolExecutor.test.ts tests/openclawPolicy.test.ts",
+    "test:integration": "vitest run tests/server.integration.test.ts",
     "android:apk": "npx eas build -p android --profile preview"
   },
   "dependencies": {
@@ -33,7 +36,9 @@
   },
   "devDependencies": {
     "@expo/cli": "^0.19.0",
+    "@types/node": "^25.5.2",
     "@types/react": "~19.1.10",
-    "typescript": "^5.3.3"
+    "typescript": "^5.3.3",
+    "vitest": "^4.1.3"
   }
 }

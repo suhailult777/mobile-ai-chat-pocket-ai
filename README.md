@@ -22,6 +22,7 @@ This repository is optimized for low-latency streaming UX, resilient model fallb
 - [Configuration](#configuration)
 - [Scripts](#scripts)
 - [Agent Mode](#agent-mode)
+- [OpenClaw Bridge](#openclaw-bridge)
 - [Turbo Mode Native](#turbo-mode-native)
 - [Proxy API](#proxy-api)
 - [Project Structure](#project-structure)
@@ -160,6 +161,8 @@ In Settings tab:
 | `model`      | string  | `nvidia/nemotron-3-nano-30b-a3b` | Model ID or `file://` GGUF path    |
 | `mode`       | enum    | `nvidia-proxy`                   | `nvidia-proxy` or `native`         |
 | `agentMode`  | boolean | `true`                           | Enables tool workflow support      |
+| `openclawEnabled` | boolean | `false`                    | Enables OpenClaw bridge tools      |
+| `openclawNodeId`  | string  | ``                           | Target paired OpenClaw node ID     |
 | `turboMode`  | boolean | `false`                          | Native-only speculative mode       |
 | `draftModel` | string  | ``                               | `file://` draft GGUF path          |
 
@@ -178,6 +181,15 @@ In Settings tab:
 | `MODEL_FALLBACK_CAPACITY` | No       | `nvidia/llama-3.1-nemotron-nano-8b-v1`     | Fallback model #3                               |
 | `JINA_API_KEY`            | No       | empty                                      | Enables higher-quality web search in Agent Mode |
 
+### OpenClaw Gateway Variables
+
+| Variable | Required | Default | Purpose |
+| -------- | -------- | ------- | ------- |
+| `OPENCLAW_GATEWAY_URL` | No | `http://127.0.0.1:3000` | Local OpenClaw gateway base URL |
+| `OPENCLAW_GATEWAY_TOKEN` | Yes | - | Gateway bearer token kept server-side |
+| `OPENCLAW_GATEWAY_TIMEOUT_MS` | No | `15000` | Gateway request timeout in milliseconds |
+| `OPENCLAW_REPLAY_WINDOW_MS` | No | `5000` | Idempotency replay window for tool calls |
+
 ## Scripts
 
 ### Root scripts
@@ -192,6 +204,8 @@ In Settings tab:
 | `pnpm proxy:install` | Install proxy dependencies in `server/` |
 | `pnpm proxy:start`   | Start NVIDIA proxy server               |
 | `pnpm typecheck`     | TypeScript check                        |
+| `pnpm test`          | Typecheck plus server syntax smoke check |
+| `pnpm test:phase6`   | Run unit and integration tests          |
 | `pnpm android:apk`   | Build preview APK via EAS               |
 
 ### Server scripts
@@ -220,6 +234,22 @@ Native mode behavior:
 - Tool system prompt and tool-call parsing scaffold are present in `nativeClient`
 - Local execution paths for `web_search` and `fetch_page` are implemented via `toolExecutor`
 - Designed as an incremental scaffold and may vary by model formatting/tool-call style
+
+## OpenClaw Bridge
+
+OpenClaw is an optional tool-execution layer that sits beneath Agent Mode. It does not replace the model transport; `nvidia-proxy` and `native` remain the backends for token generation.
+
+- Enable it from Settings with the OpenClaw toggle.
+- Select a paired node from the listed OpenClaw nodes, or paste a node ID manually.
+- Gateway URL and token stay on the server side; the app only stores the node target.
+- `openclaw_run_command` is intentionally restricted to a small read-only allowlist in this rollout.
+- The chat footer shows execution states for approval, bridge execution, replayed calls, policy denials, and bridge failures.
+
+Recommended rollout posture:
+
+- Keep OpenClaw disabled by default until the gateway and node pairing are validated.
+- Use only the allowlisted diagnostic commands until the policy surface is expanded in a later phase.
+- Prefer the `openclaw_list_nodes` and `openclaw_node_status` tools before attempting any command execution.
 
 ## Turbo Mode Native
 

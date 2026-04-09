@@ -1,30 +1,15 @@
 import React, { useEffect, useMemo, useState } from "react";
 import * as SecureStore from "expo-secure-store";
+import {
+  defaultSettings as persistedDefaultSettings,
+  getPersistedSettingsWrites,
+  normalizeStoredSettings,
+  type AppSettings,
+} from "./settingsPersistence";
 
-export type Settings = {
-  host: string;
-  port: string;
-  model: string;
-  mode: "nvidia-proxy" | "native";
-  agentMode: boolean;
-  openclawEnabled: boolean;
-  openclawNodeId: string;
-  // Speculative decoding settings (Phase 6)
-  turboMode: boolean;
-  draftModel: string; // file:// path to smaller GGUF model for speculation
-};
+export type Settings = AppSettings;
 
-export const defaultSettings: Settings = {
-  host: "127.0.0.1",
-  port: "8787",
-  model: "nvidia/nemotron-3-nano-30b-a3b",
-  mode: "nvidia-proxy",
-  agentMode: true,
-  openclawEnabled: false,
-  openclawNodeId: "",
-  turboMode: false,
-  draftModel: "",
-};
+export const defaultSettings: Settings = persistedDefaultSettings;
 
 export const SettingsContext = React.createContext<{
   settings: Settings;
@@ -58,25 +43,22 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
           SecureStore.getItemAsync("turboMode"),
           SecureStore.getItemAsync("draftModel"),
         ]);
-        const normalizedMode: Settings["mode"] =
-          mode === "remote"
-            ? "nvidia-proxy"
-            : (mode as Settings["mode"]) || defaultSettings.mode;
-        setSettings({
-          host: host || defaultSettings.host,
-          port: port || defaultSettings.port,
-          model: model || defaultSettings.model,
-          mode: normalizedMode,
-          agentMode: agentMode
-            ? agentMode === "true"
-            : defaultSettings.agentMode,
-          openclawEnabled: openclawEnabled
-            ? openclawEnabled === "true"
-            : defaultSettings.openclawEnabled,
-          openclawNodeId: openclawNodeId || defaultSettings.openclawNodeId,
-          turboMode: turboMode === "true",
-          draftModel: draftModel || defaultSettings.draftModel,
-        });
+        setSettings(
+          normalizeStoredSettings(
+            {
+              host,
+              port,
+              model,
+              mode,
+              agentMode,
+              openclawEnabled,
+              openclawNodeId,
+              turboMode,
+              draftModel,
+            },
+            defaultSettings,
+          ),
+        );
       } catch (e) {
         console.warn("Failed to load settings", e);
       }
@@ -88,27 +70,10 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
       const next = { ...settings, ...partial };
       setSettings(next);
       try {
-        if (partial.host !== undefined)
-          await SecureStore.setItemAsync("host", next.host);
-        if (partial.port !== undefined)
-          await SecureStore.setItemAsync("port", next.port);
-        if (partial.model !== undefined)
-          await SecureStore.setItemAsync("model", next.model);
-        if (partial.mode !== undefined)
-          await SecureStore.setItemAsync("mode", next.mode);
-        if (partial.agentMode !== undefined)
-          await SecureStore.setItemAsync("agentMode", String(next.agentMode));
-        if (partial.openclawEnabled !== undefined)
-          await SecureStore.setItemAsync(
-            "openclawEnabled",
-            String(next.openclawEnabled),
-          );
-        if (partial.openclawNodeId !== undefined)
-          await SecureStore.setItemAsync("openclawNodeId", next.openclawNodeId);
-        if (partial.turboMode !== undefined)
-          await SecureStore.setItemAsync("turboMode", String(next.turboMode));
-        if (partial.draftModel !== undefined)
-          await SecureStore.setItemAsync("draftModel", next.draftModel);
+        const writes = getPersistedSettingsWrites(next, partial);
+        for (const [key, value] of writes) {
+          await SecureStore.setItemAsync(key, value);
+        }
       } catch (e) {
         console.warn("Failed to save settings", e);
       }

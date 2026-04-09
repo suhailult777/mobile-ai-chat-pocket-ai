@@ -1,4 +1,5 @@
 import type { ChatMessage, StreamHandle } from "./ollamaClient";
+import type { AgentExecutionStatus } from "./toolExecutor";
 import {
   streamNvidiaProxy,
   getNvidiaProxyModels,
@@ -48,6 +49,7 @@ export function streamProvider(opts: {
   }) => void;
   onError?: (e: any) => void;
   onDone?: () => void;
+  onStatus?: (status: AgentExecutionStatus) => void;
   agentMode?: boolean;
   // Speculative decoding options (native mode only)
   turboMode?: boolean;
@@ -76,6 +78,7 @@ export function streamProvider(opts: {
       openclawNodeId: opts.openclawNodeId,
       onToken: opts.onToken,
       onMeta: opts.onMeta,
+      onStatus: opts.onStatus,
       turboMode: opts.turboMode,
       draftModel: opts.draftModel,
       onError: (e) => {
@@ -97,6 +100,7 @@ export function streamProvider(opts: {
       openclawNodeId: opts.openclawNodeId,
       onToken: opts.onToken,
       onMeta: opts.onMeta,
+      onStatus: opts.onStatus,
       onError: (e) => {
         activeStreamHandle = null;
         opts.onError?.(e);

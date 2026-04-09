@@ -1,4 +1,5 @@
 export {
+  advanceToolLoopState,
   buildToolSystemPrompt,
   executeParsedToolCall,
   normalizeToolCallSignature,
