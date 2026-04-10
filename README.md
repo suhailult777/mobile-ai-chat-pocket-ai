@@ -1,183 +1,326 @@
-﻿# 📱 PocketClaw: Mobile AI Chat & ZeroClaw Integration
+# PocketClaw
 
 <div align="center">
   <img src="https://img.shields.io/badge/Expo-SDK%2054-000000?logo=expo&logoColor=white" alt="Expo SDK" />
   <img src="https://img.shields.io/badge/React%20Native-0.81-61dafb?logo=react&logoColor=black" alt="React Native" />
   <img src="https://img.shields.io/badge/TypeScript-5.x-3178c6?logo=typescript&logoColor=white" alt="TypeScript" />
-  <img src="https://img.shields.io/badge/Platform-Android%20First-3ddc84?logo=android&logoColor=white" alt="Platform" />
-  <img src="https://img.shields.io/badge/LLM-GLM--5-blue?logo=nvidia&logoColor=white" alt="GLM-5" />
+  <img src="https://img.shields.io/badge/Bun-1.3.11-000000?logo=bun&logoColor=white" alt="Bun" />
+  <img src="https://img.shields.io/badge/Android-First-3ddc84?logo=android&logoColor=white" alt="Android first" />
 </div>
 
-<br />
+<p align="center">
+  Mobile AI chat for local and near-local workflows, with Expo Go compatibility, native dev-client support, and ZeroClaw-backed command execution.
+</p>
 
-PocketClaw is an advanced mobile chat application designed for seamless localized AI workflows. It features a robust dual-execution path (NVIDIA Proxy Mode & Native On-Device Mode) and integrates directly with the **ZeroClaw Gateway** to securely execute local shell commands directly from your mobile device.
+PocketClaw is a React Native and Expo application for streaming chat against local or LAN-hosted AI backends. The project supports a proxy-based NVIDIA NIM path for Expo Go, a native path for dev-client builds, and a ZeroClaw command-execution bridge for trusted local shell workflows.
 
-This repository is optimized for **low-latency streaming UX**, **resilient model fallback**, and **production-oriented error handling**.
+The repository is organized for practical development on Windows-first local environments, with an emphasis on predictable setup, streaming reliability, and maintainable configuration.
 
----
+## Contents
 
-## 📑 Table of Contents
+- [Overview](#overview)
+- [Recent Changes](#recent-changes)
+- [Architecture](#architecture)
+- [Requirements](#requirements)
+- [Getting Started](#getting-started)
+- [Configuration](#configuration)
+- [Scripts](#scripts)
+- [Proxy API](#proxy-api)
+- [Project Structure](#project-structure)
+- [Operational Notes](#operational-notes)
+- [Troubleshooting](#troubleshooting)
+- [Security](#security)
+- [Contributing](#contributing)
+- [License](#license)
 
-- [✨ What's New (Latest Fixes & Features)](#-whats-new-latest-fixes--features)
-- [🏗 Architecture](#-architecture)
-- [🚀 Quick Start & Local Setup](#-quick-start--local-setup)
-- [⚙️ Configuration](#-configuration)
-- [🛠 Scripts](#-scripts)
-- [🤖 Agent Mode & ZeroClaw Execution](#-agent-mode--zeroclaw-execution)
-- [🐞 Troubleshooting & Known Issues](#-troubleshooting--known-issues)
-- [🛡 Security and Privacy](#-security-and-privacy)
+## Overview
 
----
+PocketClaw is designed for three common workflows:
 
-## ✨ What's New (Latest Fixes & Features)
+- Expo Go users who want to chat through a local proxy without native builds.
+- Dev-client users who want on-device inference through `llama.rn`.
+- Power users who want the model to trigger trusted local commands through ZeroClaw.
 
-We've recently overhauled the networking and execution pipeline to support heavier models and remote execution:
+The app provides a streaming chat interface, persisted settings, model fallback handling, and an agent mode that can call web search, page fetch, and ZeroClaw webhook tools when enabled.
 
-- **NVIDIA GLM-5 Integration (z-ai/glm5)**: Switched the primary intelligence engine to GLM-5 for state-of-the-art tool calling and parsing.
-- **Fixed SSE Network Timeouts (OkHttp)**: Resolved a critical bug where the native Android OkHttp client would drop connections during long tool executions (>10s).
-  - *Fix Details*: Disabled Nagle's algorithm (setNoDelay(true)) and implemented high-volume whitespace padded heartbeat emitting. This forces the TCP buffer to flush via Bun's server bridge, keeping the mobile client alive perfectly during heavy GLM-5 shell executions.
-- **Trailing Space Model Patches**: Fixed an issue causing 404 errors from NVIDIA NIM APIs by trimming trailing spaces from requested model strings.
-- **End-to-End ZeroClaw Execution**: The mobile app can now accurately read terminal locations, execute PowerShell, and read local desktop files through the ZeroClaw gateway. 
+## Recent Changes
 
----
+The current codebase includes the following notable updates:
 
-## 🏗 Architecture
+- The NVIDIA proxy now trims requested model IDs before forwarding them upstream, which prevents whitespace-related `404` failures.
+- Long-running agent streams now stay connected through periodic SSE heartbeats and socket flushing, which reduces Android read-timeout issues.
+- ZeroClaw pairing and local execution are part of the documented setup flow, including gateway startup and token pairing.
+- The latest tool-call path has been validated with `z-ai/glm5`.
 
-PocketClaw maintains a clean separation between the mobile UI and the inference backend:
+## Architecture
 
-1. **Mobile UI (Expo/React Native)**: Captures prompts and renders streaming markdown, thinking indicators, and haptics via FlashList.
-2. **Node.js/Bun Proxy (server/index.js)**: Bridges HTTP to the NVIDIA API and the local ZeroClaw agent. Handles model fallbacks, SSE connections, and parses LLM tool calls.
-3. **ZeroClaw Gateway**: A secure local binary that catches commands from the proxy and executes them on the host OS.
-4. **NVIDIA NIM (z-ai/glm5)**: The LLM brain responsible for generation and reasoning.
+The main runtime path is:
 
----
+1. The mobile UI captures a prompt and sends the conversation through the configured provider.
+2. `providerRouter` selects either the NVIDIA proxy path or the native path.
+3. In proxy mode, `server/index.js` forwards requests to NVIDIA NIM and streams responses back to the app.
+4. In agent mode, the proxy can execute `web_search`, `fetch_page`, and `zeroclaw_webhook` tool calls.
+5. If ZeroClaw is enabled, the proxy relays local command execution to the paired gateway and returns the result to the model.
 
-## 🚀 Quick Start & Local Setup
+Core implementation files:
 
-To test the entire end-to-end remote execution and AI chatting flow locally, you'll need to start three core services:
+- `src/screens/ChatScreen.tsx`: chat UI, streaming state, and message rendering.
+- `src/screens/SettingsScreen.tsx`: provider, model, and ZeroClaw settings.
+- `src/context/SettingsContext.tsx`: secure settings persistence.
+- `src/lib/providerRouter.ts`: routing boundary between proxy and native modes.
+- `src/lib/nvidiaProxyClient.ts`: streaming client for the proxy endpoint.
+- `server/index.js`: NVIDIA proxy, tool orchestration, and SSE handling.
 
-### Prerequisites
-- **Bun 1.1+** (Fast JavaScript runtime)
-- **Expo CLI** (
-pm i -g expo-cli)
-- **NVIDIA API Key** (for NIM integration)
-- **ZeroClaw Binary** (Installed locally)
+## Requirements
 
----
+- Bun 1.3.11 or newer.
+- Windows PowerShell for the ZeroClaw gateway script.
+- An NVIDIA API key for proxy mode.
+- Expo Go for the proxy path, or an Expo dev client for native mode.
+- An Android device or emulator for the primary supported workflow.
+- The ZeroClaw gateway binary if you plan to use local command execution.
 
-### Step 1: Start the ZeroClaw Gateway
+## Getting Started
 
-The gateway safely executes terminal commands triggered by the AI.
+### 1. Install dependencies
 
-1. Open a new terminal.
-2. Run the gateway startup script:
-   `powershell
-   cd D:\pocket-claw\mobile-ai-chat-pocket-ai
-   .\server\zeroclaw-gateway.ps1
-   `
-3. Open another terminal to generate a fresh pairing code to link the proxy:
-   `powershell
-   zeroclaw gateway get-paircode --new
-   `
-   *(Keep this 6-digit code handy to enter into the mobile app's Settings).*
+From the repository root:
 
----
+```powershell
+bun install
+bun run proxy:install
+```
 
-### Step 2: Start the Bun Proxy Server
+### 2. Create the proxy environment file
 
-The proxy handles the heavy lifting of routing UI requests to NVIDIA and enforcing timeouts.
+Create `server/.env` and add the required values. A minimal setup looks like this:
 
-1. Open a new terminal.
-2. Install dependencies:
-   `powershell
-   cd D:\pocket-claw\mobile-ai-chat-pocket-ai\server
-   bun install
-   `
-3. Set your environment variables:
-   `powershell
-   copy .env.example .env
-   # Edit .env and add your NVIDIA_API_KEY
-   `
-4. Start the proxy server:
-   `powershell
-   bun run index.js
-   `
-   *The proxy runs on http://0.0.0.0:8787.*
+```powershell
+NVIDIA_API_KEY=your-api-key
+PORT=8787
+NVIDIA_BASE_URL=https://integrate.api.nvidia.com
+DEFAULT_MODEL=nvidia/nemotron-3-nano-30b-a3b
+MODEL_FALLBACK_QUALITY=nvidia/llama-3.3-nemotron-super-49b-v1.5
+MODEL_FALLBACK_CAPACITY=nvidia/llama-3.1-nemotron-nano-8b-v1
+ALLOWED_ORIGIN=*
+JINA_API_KEY=
+ZEROCLAW_GATEWAY_URL=http://127.0.0.1:3000
+ZEROCLAW_GATEWAY_TIMEOUT_MS=15000
+ZEROCLAW_REPLAY_WINDOW_MS=5000
+ZEROCLAW_WEBHOOK_SECRET=
+LOCAL_SHELL_TIMEOUT_MS=20000
+```
 
----
+### 3. Start the ZeroClaw gateway
 
-### Step 3: Launch the Expo Mobile App
+Open a separate terminal and start the gateway:
 
-1. Open a new terminal from the project root.
-2. Install app dependencies:
-   `powershell
-   cd D:\pocket-claw\mobile-ai-chat-pocket-ai
-   bun install
-   `
-3. Start the Expo bundler:
-   `powershell
-   bun run start -- --go --host lan --port 8081 --offline
-   `
-4. Open the **Expo Go** app on your physical device or emulator and scan the generated QR code.
+```powershell
+bun run zeroclaw:start
+```
 
----
+If you prefer to run it from the server package directly, use:
 
-### Step 4: Connect the App to the Server
+```powershell
+bun run --cwd server zeroclaw:gateway
+```
 
-Once the app opens on your device:
-1. Go to the **Settings** tab.
-2. Under "Mode", select **NVIDIA Proxy**.
-3. Under "Proxy Host", enter your PC's local IP address (e.g., 192.168.x.x). Keep the port as 8787.
-4. Enter the z-ai/glm5 model.
-5. Toggle **ZeroClaw Enabled** and enter the pairing code from Step 1.
-6. Test the connection! Ask the AI: *"Run this on my computer via zeroclaw_webhook and return output only: Get-Location"*
+Generate a pairing code when needed:
 
----
+```powershell
+zeroclaw gateway get-paircode --new
+```
 
-## ⚙️ Configuration
+### 4. Start the proxy server
 
-### Important App Settings (SecureStore)
+```powershell
+bun run proxy:start
+```
 
-| Key                     | Default                          | Notes                              |
-| ----------------------- | -------------------------------- | ---------------------------------- |
-| host                  | 127.0.0.1                      | Proxy host for 
-vidia-proxy mode |
-| model                 | z-ai/glm5                      | Active LLM Model ID                |
-| zeroClawEnabled       | alse                          | Enables ZeroClaw webhook tools     |
-| zeroClawGatewayUrl    | http://127.0.0.1:3000          | Local ZeroClaw gateway address     |
+The proxy listens on `http://0.0.0.0:8787` by default.
 
----
+### 5. Start the Expo app
 
-## 🛠 Scripts
+For Expo Go:
 
-| Command                 | Description                             |
-| ----------------------- | --------------------------------------- |
-| un run start         | Start Expo dev server                   |
-| un run proxy:install | Install proxy dependencies in server/ |
-| un run proxy:start   | Start NVIDIA proxy server               |
-| un run test          | Run test suites                         |
-| un run android:apk   | Build preview APK via EAS               |
+```powershell
+bun run start -- --go --host lan --port 8081 --offline
+```
 
----
+For a dev client build:
 
-## 🤖 Agent Mode & ZeroClaw Execution
+```powershell
+bun run start:dev
+```
 
-When **Agent Mode** is enabled, the proxy injects system prompts and parses out <tool_calls>.
+### 6. Configure the app
 
-If the AI decides to execute a shell command, the proxy pauses the main LLM stream, triggers the local ZeroClaw Gateway binary via child_process, and streams massive whitespaces (setNoDelay(true)) back to the mobile client as a heartbeat. Once the host PC resolves the executed command, the proxy packages the stdout/stderr and feeds it back to the GLM-5 model for a finalized conversational response.
+In the Settings screen:
 
----
+1. Select `NVIDIA Proxy` mode.
+2. Set the proxy host to your computer's LAN IP address.
+3. Keep the proxy port at `8787` unless you changed the server configuration.
+4. Enter the model you want to use. `z-ai/glm5` has been validated with the latest tool-call flow.
+5. Enable ZeroClaw only if you have paired the gateway and entered the token.
 
-## 🐞 Troubleshooting & Known Issues
+## Configuration
 
-- **Network Timeout (Network Error reaching http://...)**: If you experience this during long tool calls, ensure you are running the latest server/index.js which includes the setNoDelay TCP padding fixes.
-- **Model 404 Errors**: Ensure your model string in the app Settings does not have a trailing space (e.g., z-ai/glm5 ). The latest proxy trims this automatically.
-- **Expo Go LAN Issues**: If Expo Go cannot connect, verify your Windows Defender Firewall allows traffic on ports 8081 (Expo) and 8787 (Proxy).
+### App settings
 
----
+Settings are persisted with `expo-secure-store`.
 
-## 🛡 Security and Privacy
+| Key | Default | Description |
+| --- | --- | --- |
+| `host` | `127.0.0.1` | Proxy host used in `nvidia-proxy` mode |
+| `port` | `8787` | Proxy port |
+| `model` | `nvidia/nemotron-3-nano-30b-a3b` | Default model ID or local GGUF path |
+| `mode` | `nvidia-proxy` | Active provider mode |
+| `agentMode` | `true` | Enables tool-based agent behavior |
+| `zeroClawEnabled` | `false` | Enables the ZeroClaw webhook tool |
+| `zeroClawGatewayUrl` | `http://127.0.0.1:3000` | Local ZeroClaw gateway base URL |
+| `zeroClawToken` | empty | Paired token stored on device |
+| `zeroClawWebhookSecret` | empty | Optional webhook secret |
+| `turboMode` | `false` | Enables native speculative mode |
+| `draftModel` | empty | Draft GGUF model path for Turbo Mode |
 
-- **On-Device Keys**: ZeroClaw pairing tokens are safely stored inside the device's secure enclave (expo-secure-store).
-- **No Key Leaks**: The NVIDIA API key lives exclusively in the local Node.js proxy .env file and is never transmitted to the client.
-- **Local Network Only**: ZeroClaw binds to localhost and your proxy, meaning external internet traffic cannot trigger your host shell.
+### Proxy environment variables
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `NVIDIA_API_KEY` | required | Authenticates requests to NVIDIA NIM |
+| `PORT` | `8787` | Proxy listener port |
+| `NVIDIA_BASE_URL` | `https://integrate.api.nvidia.com` | Upstream API base URL |
+| `DEFAULT_MODEL` | `nvidia/nemotron-3-nano-30b-a3b` | Primary model used by the proxy |
+| `MODEL_FALLBACK_QUALITY` | `nvidia/llama-3.3-nemotron-super-49b-v1.5` | Quality fallback model |
+| `MODEL_FALLBACK_CAPACITY` | `nvidia/llama-3.1-nemotron-nano-8b-v1` | Capacity fallback model |
+| `ALLOWED_ORIGIN` | `*` | CORS origin policy |
+| `JINA_API_KEY` | empty | Enables higher quality web search in agent mode |
+| `ZEROCLAW_GATEWAY_URL` | `http://127.0.0.1:3000` | Gateway URL used for ZeroClaw relay |
+| `ZEROCLAW_GATEWAY_TIMEOUT_MS` | `15000` | Gateway request timeout |
+| `ZEROCLAW_REPLAY_WINDOW_MS` | `5000` | Idempotency replay window |
+| `ZEROCLAW_WEBHOOK_SECRET` | empty | Optional secret passed to the gateway |
+| `LOCAL_SHELL_TIMEOUT_MS` | `20000` | Local shell execution timeout |
+
+## Scripts
+
+### Root scripts
+
+| Command | Description |
+| --- | --- |
+| `bun run start` | Start the Expo development server |
+| `bun run start:dev` | Start Expo in dev-client mode |
+| `bun run android` | Launch the Android target |
+| `bun run ios` | Launch the iOS target |
+| `bun run web` | Launch the web target |
+| `bun run proxy:install` | Install dependencies for `server/` |
+| `bun run proxy:start` | Start the NVIDIA proxy server |
+| `bun run zeroclaw:start` | Start the ZeroClaw gateway script |
+| `bun run typecheck` | Run the TypeScript compiler check |
+| `bun run test` | Run typecheck plus unit and integration tests |
+| `bun run test:unit` | Run unit tests only |
+| `bun run test:integration` | Run integration tests only |
+| `bun run test:phase6` | Run the Vitest suite |
+| `bun run android:apk` | Build a preview Android APK with EAS |
+
+### Server scripts
+
+| Command | Description |
+| --- | --- |
+| `bun run start` | Start the Express proxy server |
+| `bun run zeroclaw:gateway` | Start the PowerShell gateway wrapper |
+
+## Proxy API
+
+Base URL: `http://<host>:<port>`
+
+| Endpoint | Method | Description |
+| --- | --- | --- |
+| `/health` | GET | Health check endpoint |
+| `/v1/models` | GET | Model catalog passthrough |
+| `/v1/chat/completions` | POST | Main chat endpoint with streaming support |
+| `/test-sse` | GET | SSE diagnostic endpoint |
+
+The chat endpoint supports OpenAI-compatible messages, `stream`, `agent_mode`, and `model`.
+
+## Project Structure
+
+```text
+.
+├── App.tsx
+├── app.json
+├── babel.config.js
+├── docs/
+├── plugins/
+├── server/
+│   ├── index.js
+│   ├── package.json
+│   └── zeroclaw-gateway.ps1
+├── src/
+│   ├── components/
+│   ├── context/
+│   ├── hooks/
+│   ├── lib/
+│   └── screens/
+└── tests/
+```
+
+## Operational Notes
+
+- The proxy exposes `x-model-requested`, `x-model-selected`, and `x-model-fallback-used` headers so clients can inspect routing behavior.
+- Model fallback proceeds from the requested model to the quality fallback and then the capacity fallback if the upstream request fails.
+- Agent mode keeps SSE streams alive during long operations so mobile clients do not disconnect while a tool is running.
+- The proxy strips internal control fields such as `agent_mode` and `zeroclaw_*` before forwarding the payload to NVIDIA.
+- ZeroClaw is designed for trusted local or LAN environments only.
+
+## Troubleshooting
+
+### Proxy connection fails
+
+- Confirm the proxy is running on the expected host and port.
+- Verify the mobile device and proxy machine are on the same network when using a LAN IP.
+- Check Windows Firewall rules for ports `8787` and `8081`.
+
+### The model request returns 404
+
+- Check that the model ID exists in NVIDIA's catalog.
+- Remove trailing whitespace from the model field in Settings.
+- Restart the proxy after changing the model or `.env` values.
+
+### Streams stall on Android
+
+- Make sure you are using the current proxy implementation.
+- Confirm the proxy can reach NVIDIA and that the agent does not lose its SSE connection.
+- If the network is unstable, try the non-agent path first to isolate the issue.
+
+### ZeroClaw does not execute commands
+
+- Confirm the gateway is running and the pairing token has been entered.
+- Verify `zeroClawEnabled` is turned on in Settings.
+- Check `ZEROCLAW_GATEWAY_URL` and `ZEROCLAW_WEBHOOK_SECRET` in `server/.env`.
+
+### Native mode is unavailable in Expo Go
+
+- Expo Go cannot load native `llama.rn` modules.
+- Use `bun run start:dev` with a dev-client build if you want local native inference.
+
+## Security
+
+- Keep `NVIDIA_API_KEY` in `server/.env`; do not store it in the mobile app.
+- Treat ZeroClaw tokens and webhook secrets as sensitive values.
+- Use ZeroClaw only on trusted local networks and machines.
+- Review any command execution flow before enabling it for day-to-day use.
+
+## Contributing
+
+Contributions are welcome. Keep changes focused, document any new settings or scripts, and run the test suite before opening a pull request.
+
+Suggested validation before submitting changes:
+
+```powershell
+bun run typecheck
+bun run test
+```
+
+## License
+
+This repository does not currently include a license file. Add one before distributing the project publicly.
