@@ -88,16 +88,15 @@ To ensure a smooth setup, perform the following steps in order. Three separate t
 
 From the repository root, install the root and server-specific dependencies:
 
-\\\powershell
+```powershell
 bun install
 bun run proxy:install
-\\\
-
+`$([char]10)
 ### 2. Configure the Environment
 
 Create the proxy environment file at server/.env and populate it with the required keys. 
 
-\\\powershell
+```powershell
 NVIDIA_API_KEY=your_nvidia_api_key_here
 PORT=8787
 NVIDIA_BASE_URL=https://integrate.api.nvidia.com
@@ -111,47 +110,40 @@ ZEROCLAW_GATEWAY_TIMEOUT_MS=15000
 ZEROCLAW_REPLAY_WINDOW_MS=5000
 ZEROCLAW_WEBHOOK_SECRET=
 LOCAL_SHELL_TIMEOUT_MS=20000
-\\\
-
+`$([char]10)
 ### 3. Start the ZeroClaw Gateway
 
 Open a dedicated terminal. This script acts as the bridge for local command execution.
 
-\\\powershell
+```powershell
 bun run zeroclaw:start
-\\\
-Under the hood, this executes: powershell -ExecutionPolicy Bypass -File ./zeroclaw-gateway.ps1 from the server directory. The script normally listens on port 3000. 
+`$([char]10)Under the hood, this executes: powershell -ExecutionPolicy Bypass -File ./zeroclaw-gateway.ps1 from the server directory. The script normally listens on port 3000. 
 
 If this is your first time, you can generate a pairing token. Note the token, as you will need to input it into the mobile application settings.
-\\\powershell
+```powershell
 zeroclaw gateway get-paircode --new
-\\\
-
+`$([char]10)
 ### 4. Start the Proxy Server
 
 Open a second terminal. This Express server multiplexes requests to NVIDIA and local AI agents.
 
-\\\powershell
+```powershell
 bun run proxy:start
-\\\
-This executes bun index.js inside the server directory. By default, it will listen on http://0.0.0.0:8787. Ensure it boots without throwing module-not-found errors.
+`$([char]10)This executes bun index.js inside the server directory. By default, it will listen on http://0.0.0.0:8787. Ensure it boots without throwing module-not-found errors.
 
 ### 5. Start the Expo Application
 
 Open a third terminal. You can run the application for the physical device via Expo Go or via an emulator. For physical device testing over LAN without online syncing:
 
-\\\powershell
+```powershell
 bun run start -- --go --host lan --port 8081 --offline
-\\\
-If you encounter bundler caching issues or unexpected UI state, you can clear the Expo cache:
-\\\powershell
+`$([char]10)If you encounter bundler caching issues or unexpected UI state, you can clear the Expo cache:
+```powershell
 npx expo start -c
-\\\
-For users running a native dev-client build (which includes native C++ bindings for llama.rn):
-\\\powershell
+`$([char]10)For users running a native dev-client build (which includes native C++ bindings for llama.rn):
+```powershell
 bun run start:dev
-\\\
-
+`$([char]10)
 ### 6. App Configuration (Mobile UI)
 
 Open the app via the Expo Go QR code or your emulator.
@@ -243,7 +235,7 @@ The chat endpoint supports OpenAI-compatible messages, stream, agent_mode, and m
 
 ## Project Structure
 
-`	ext
+```ext
 .
 ├── App.tsx
 ├── app.json
@@ -261,8 +253,7 @@ The chat endpoint supports OpenAI-compatible messages, stream, agent_mode, and m
 │   ├── lib/
 │   └── screens/
 └── tests/
-`
-
+```
 ## Operational Notes & Caveats
 
 - Model Fallback Constraints: Model fallback proceeds from the requested model to the quality fallback and then the capacity fallback if the upstream request fails. However, some tools may only be supported by the primary model. Ensure your primary model (like z-ai/glm5) fully supports function calling if agentMode is enabled.
@@ -312,3 +303,6 @@ Guidelines for contributing to the repository. Please ensure all pull requests p
 ## License
 
 MIT License. See the repository headers.
+
+
+
