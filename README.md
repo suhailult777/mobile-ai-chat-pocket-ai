@@ -22,7 +22,7 @@ This repository is optimized for low-latency streaming UX, resilient model fallb
 - [Configuration](#configuration)
 - [Scripts](#scripts)
 - [Agent Mode](#agent-mode)
-- [OpenClaw Bridge](#openclaw-bridge)
+- [ZeroClaw Gateway](#zeroclaw-gateway)
 - [Turbo Mode Native](#turbo-mode-native)
 - [Proxy API](#proxy-api)
 - [Project Structure](#project-structure)
@@ -96,8 +96,7 @@ Use this for on-device GGUF inference in dev client builds.
 
 ### Prerequisites
 
-- Node.js 18+
-- pnpm
+- Bun 1.3.11+
 - Expo tooling
 - NVIDIA API key (for proxy mode)
 - Android device/emulator (primary target)
@@ -105,8 +104,8 @@ Use this for on-device GGUF inference in dev client builds.
 ### 1) Install dependencies
 
 ```powershell
-pnpm install
-pnpm proxy:install
+bun install
+bun run proxy:install
 ```
 
 ### 2) Configure proxy server
@@ -122,7 +121,7 @@ Set at least:
 Then start proxy:
 
 ```powershell
-pnpm proxy:start
+bun run proxy:start
 ```
 
 ### 3) Start app
@@ -130,14 +129,14 @@ pnpm proxy:start
 Expo Go path:
 
 ```powershell
-pnpm start
+bun run start
 ```
 
 Native dev client path:
 
 ```powershell
-npx eas build --profile development --platform android
-pnpm start:dev
+bunx eas build --profile development --platform android
+bun run start:dev
 ```
 
 ### 4) Configure app settings
@@ -150,21 +149,80 @@ In Settings tab:
 4. Test connection
 5. Start chatting
 
+## Running the Project Locally
+
+To test the entire end-to-end ZeroClaw remote execution and AI chatting flow locally, follow these steps to start all three required servers:
+
+### 1. Start the ZeroClaw Gateway
+
+The ZeroClaw gateway is required to execute local terminal commands securely on your computer.
+
+1. Open a new terminal.
+2. Run the gateway startup script:
+   ```powershell
+   cd D:\pocket-claw\mobile-ai-chat-pocket-ai
+   .\server\zeroclaw-gateway.ps1
+   ```
+3. To pair the AI proxy to the gateway, generate a new pairing code by running this command in a separate terminal window:
+   ```powershell
+   zeroclaw gateway get-paircode --new
+   ```
+   _(Take note of the 6-digit code for the mobile app's pairing screen if required)._
+
+### 2. Start the NVIDIA Proxy Server
+
+The Node.js proxy server sits between your mobile app and the NVIDIA models. It parses shell executions, intercepts `<tool_calls>`, and runs them locally through the gateway.
+
+1. Open a new terminal.
+2. Ensure you have your `NVIDIA_API_KEY` set in `server/.env`.
+3. Start the proxy:
+   ```powershell
+   cd D:\pocket-claw\mobile-ai-chat-pocket-ai
+   bun run proxy:start
+   ```
+   _The proxy will listen on `http://0.0.0.0:8787`._
+
+### 3. Start the Expo Mobile App
+
+The Expo server bundles and serves the React Native mobile application to your physical device or emulator.
+
+1. Open a new terminal.
+2. Run the Expo start command:
+   ```powershell
+   cd D:\pocket-claw\mobile-ai-chat-pocket-ai
+   bun run start -- --go --host lan --port 8081 --offline
+   ```
+   _Note: Using `--offline` and `--go` prevents Expo from requiring an internet connection to the Expo servers and speeds up local LAN bundling._
+3. Open the "Expo Go" app on your iOS or Android device and scan the QR code that appears in the terminal.
+
+### Connecting the App
+
+Once the app is open on your phone:
+
+1. Go to the **Settings** tab.
+2. Under "Mode", select **NVIDIA Proxy**.
+3. Under "Proxy Host", enter your computer's local IP address (e.g., `192.168.x.x`). Keep the port as `8787`.
+4. Run a command in the chat to test it: `Run this on my computer via zeroclaw_webhook and return output only: Get-Location`
+
+---
+
 ## Configuration
 
 ### App Settings (persisted in SecureStore)
 
-| Key          | Type    | Default                          | Notes                              |
-| ------------ | ------- | -------------------------------- | ---------------------------------- |
-| `host`       | string  | `127.0.0.1`                      | Proxy host for `nvidia-proxy` mode |
-| `port`       | string  | `8787`                           | Proxy port                         |
-| `model`      | string  | `nvidia/nemotron-3-nano-30b-a3b` | Model ID or `file://` GGUF path    |
-| `mode`       | enum    | `nvidia-proxy`                   | `nvidia-proxy` or `native`         |
-| `agentMode`  | boolean | `true`                           | Enables tool workflow support      |
-| `openclawEnabled` | boolean | `false`                    | Enables OpenClaw bridge tools      |
-| `openclawNodeId`  | string  | ``                           | Target paired OpenClaw node ID     |
-| `turboMode`  | boolean | `false`                          | Native-only speculative mode       |
-| `draftModel` | string  | ``                               | `file://` draft GGUF path          |
+| Key                     | Type    | Default                          | Notes                              |
+| ----------------------- | ------- | -------------------------------- | ---------------------------------- |
+| `host`                  | string  | `127.0.0.1`                      | Proxy host for `nvidia-proxy` mode |
+| `port`                  | string  | `8787`                           | Proxy port                         |
+| `model`                 | string  | `nvidia/nemotron-3-nano-30b-a3b` | Model ID or `file://` GGUF path    |
+| `mode`                  | enum    | `nvidia-proxy`                   | `nvidia-proxy` or `native`         |
+| `agentMode`             | boolean | `true`                           | Enables tool workflow support      |
+| `zeroClawEnabled`       | boolean | `false`                          | Enables ZeroClaw webhook tools     |
+| `zeroClawGatewayUrl`    | string  | `http://127.0.0.1:3000`          | ZeroClaw gateway base URL          |
+| `zeroClawToken`         | string  | ``                               | ZeroClaw bearer token from pairing |
+| `zeroClawWebhookSecret` | string  | ``                               | Optional webhook secret            |
+| `turboMode`             | boolean | `false`                          | Native-only speculative mode       |
+| `draftModel`            | string  | ``                               | `file://` draft GGUF path          |
 
 ### Proxy Environment Variables
 
@@ -181,38 +239,38 @@ In Settings tab:
 | `MODEL_FALLBACK_CAPACITY` | No       | `nvidia/llama-3.1-nemotron-nano-8b-v1`     | Fallback model #3                               |
 | `JINA_API_KEY`            | No       | empty                                      | Enables higher-quality web search in Agent Mode |
 
-### OpenClaw Gateway Variables
+### ZeroClaw Gateway Variables
 
-| Variable | Required | Default | Purpose |
-| -------- | -------- | ------- | ------- |
-| `OPENCLAW_GATEWAY_URL` | No | `http://127.0.0.1:3000` | Local OpenClaw gateway base URL |
-| `OPENCLAW_GATEWAY_TOKEN` | Yes | - | Gateway bearer token kept server-side |
-| `OPENCLAW_GATEWAY_TIMEOUT_MS` | No | `15000` | Gateway request timeout in milliseconds |
-| `OPENCLAW_REPLAY_WINDOW_MS` | No | `5000` | Idempotency replay window for tool calls |
+| Variable                      | Required | Default                 | Purpose                                     |
+| ----------------------------- | -------- | ----------------------- | ------------------------------------------- |
+| `ZEROCLAW_GATEWAY_URL`        | No       | `http://127.0.0.1:3000` | Local ZeroClaw gateway base URL             |
+| `ZEROCLAW_GATEWAY_TIMEOUT_MS` | No       | `15000`                 | Gateway request timeout in milliseconds     |
+| `ZEROCLAW_REPLAY_WINDOW_MS`   | No       | `5000`                  | Idempotency replay window for webhook calls |
+| `ZEROCLAW_WEBHOOK_SECRET`     | No       | empty                   | Optional X-Webhook-Secret passthrough       |
 
 ## Scripts
 
 ### Root scripts
 
-| Command              | Description                             |
-| -------------------- | --------------------------------------- |
-| `pnpm start`         | Start Expo dev server                   |
-| `pnpm start:dev`     | Start Expo dev server for dev client    |
-| `pnpm android`       | Launch Expo on Android                  |
-| `pnpm ios`           | Launch Expo on iOS                      |
-| `pnpm web`           | Launch web target                       |
-| `pnpm proxy:install` | Install proxy dependencies in `server/` |
-| `pnpm proxy:start`   | Start NVIDIA proxy server               |
-| `pnpm typecheck`     | TypeScript check                        |
-| `pnpm test`          | Typecheck plus server syntax smoke check |
-| `pnpm test:phase6`   | Run unit and integration tests          |
-| `pnpm android:apk`   | Build preview APK via EAS               |
+| Command                 | Description                             |
+| ----------------------- | --------------------------------------- |
+| `bun run start`         | Start Expo dev server                   |
+| `bun run start:dev`     | Start Expo dev server for dev client    |
+| `bun run android`       | Launch Expo on Android                  |
+| `bun run ios`           | Launch Expo on iOS                      |
+| `bun run web`           | Launch web target                       |
+| `bun run proxy:install` | Install proxy dependencies in `server/` |
+| `bun run proxy:start`   | Start NVIDIA proxy server               |
+| `bun run typecheck`     | TypeScript check                        |
+| `bun run test`          | Typecheck + unit + integration tests    |
+| `bun run test:phase6`   | Run unit and integration tests          |
+| `bun run android:apk`   | Build preview APK via EAS               |
 
 ### Server scripts
 
-| Command                   | Description                |
-| ------------------------- | -------------------------- |
-| `pnpm --dir server start` | Start Express proxy server |
+| Command                      | Description                |
+| ---------------------------- | -------------------------- |
+| `bun run --cwd server start` | Start Express proxy server |
 
 ## Agent Mode
 
@@ -235,21 +293,21 @@ Native mode behavior:
 - Local execution paths for `web_search` and `fetch_page` are implemented via `toolExecutor`
 - Designed as an incremental scaffold and may vary by model formatting/tool-call style
 
-## OpenClaw Bridge
+## ZeroClaw Gateway
 
-OpenClaw is an optional tool-execution layer that sits beneath Agent Mode. It does not replace the model transport; `nvidia-proxy` and `native` remain the backends for token generation.
+ZeroClaw is the lightweight tool-execution path beneath Agent Mode. It does not replace model transport; `nvidia-proxy` and `native` still handle token generation.
 
-- Enable it from Settings with the OpenClaw toggle.
-- Select a paired node from the listed OpenClaw nodes, or paste a node ID manually.
-- Gateway URL and token stay on the server side; the app only stores the node target.
-- `openclaw_run_command` is intentionally restricted to a small read-only allowlist in this rollout.
-- The chat footer shows execution states for approval, bridge execution, replayed calls, policy denials, and bridge failures.
+- Enable it from Settings with the ZeroClaw toggle.
+- Set gateway URL and enter a manual pairing code to obtain a token.
+- The app stores the token in secure settings and sends webhook requests through the proxy relay.
+- `zeroclaw_webhook` is the single lightweight tool exposed in this rollout.
+- The chat footer shows execution states for gateway execution, replayed calls, and gateway failures.
 
 Recommended rollout posture:
 
-- Keep OpenClaw disabled by default until the gateway and node pairing are validated.
-- Use only the allowlisted diagnostic commands until the policy surface is expanded in a later phase.
-- Prefer the `openclaw_list_nodes` and `openclaw_node_status` tools before attempting any command execution.
+- Keep ZeroClaw disabled by default until gateway pairing is validated.
+- Verify health and pairing before enabling tool calls in live usage.
+- Prefer idempotency keys for retried or repeatable operations.
 
 ## Turbo Mode Native
 
@@ -313,7 +371,7 @@ Base URL: `http://<host>:<port>` (default `http://127.0.0.1:8787`)
 
 ### Cannot connect to proxy
 
-- Ensure proxy is running: `pnpm proxy:start`
+- Ensure proxy is running: `bun run proxy:start`
 - Ensure app host/port match your machine or LAN target
 - Emulator note: if app runs in emulator, host mapping may differ
 - Check firewall rules for chosen proxy port
@@ -327,7 +385,7 @@ Base URL: `http://<host>:<port>` (default `http://127.0.0.1:8787`)
 ### Native mode not available
 
 - Expo Go does not load native llama bindings
-- Build dev client via EAS and run with `pnpm start:dev`
+- Build dev client via EAS and run with `bun run start:dev`
 - Confirm model path is a valid `file://...gguf` URI
 
 ### Draft model not used in Turbo Mode
@@ -359,7 +417,7 @@ Suggested contribution flow:
 
 1. Open an issue with problem statement and acceptance criteria
 2. Keep PRs focused and small
-3. Run `pnpm typecheck` before opening PR
+3. Run `bun run typecheck` before opening PR
 4. Include screenshots or short recordings for UI changes
 5. Document any new env vars or settings in this README
 
